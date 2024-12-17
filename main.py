@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+# Track the bot's start time
+start_time = time.time()
+
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 # Database setup
@@ -44,6 +47,13 @@ conn.commit()
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
+
+# Sync slash commands with Discord
+@bot.event
+async def on_ready():
+    # Register the bot's slash commands globally (across all servers) or for specific guilds
+    await bot.tree.sync()  # Global sync
+    print(f"Logged in as {bot.user}!")
 
 # Command: Track a game with platform buttons
 @bot.tree.command(name="trackhunt", description="Add a game to the list")
