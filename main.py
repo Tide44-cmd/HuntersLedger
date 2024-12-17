@@ -60,21 +60,21 @@ async def track_hunt(interaction: discord.Interaction, game_name: str):
         )
 
 # View with buttons for platform selection
-class PlatformView(ui.View):
+class PlatformView(discord.ui.View):  # Replace ui.View with discord.ui.View
     def __init__(self, game_name):
         super().__init__()
         self.game_name = game_name
 
-    @ui.button(label="Xbone", style=ButtonStyle.primary, custom_id="platform_Xbone")
-    async def xbox_button(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="Xbone", style=ButtonStyle.primary, custom_id="platform_Xbone")  # Replace ui.button
+    async def xbox_button(self, interaction: discord.Interaction, button: discord.ui.Button):  # Replace ui.Button
         await process_platform(interaction, self.game_name, "Xbone")
 
-    @ui.button(label="360", style=ButtonStyle.primary, custom_id="platform_360")
-    async def pc_button(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="360", style=ButtonStyle.primary, custom_id="platform_360")
+    async def pc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_platform(interaction, self.game_name, "360")
 
-    @ui.button(label="Windows", style=ButtonStyle.primary, custom_id="platform_windows")
-    async def ps_button(self, interaction: discord.Interaction, button: ui.Button):
+    @discord.ui.button(label="Windows", style=ButtonStyle.primary, custom_id="platform_windows")
+    async def ps_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await process_platform(interaction, self.game_name, "Windows")
 
 # Process platform selection
