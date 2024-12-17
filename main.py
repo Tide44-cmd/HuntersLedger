@@ -248,7 +248,7 @@ async def forget_hunter(interaction: Interaction, user: discord.User):
 # Command: Show bot version and information
 @bot.tree.command(name="botversion", description="Show bot version and additional information")
 async def bot_version(interaction: Interaction):
-    version_info = "**A Hunters Ledger v2.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/CabinSquadBot)"
+    version_info = "**A Hunters Ledger v2.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/HuntersLedger)"
     await interaction.response.send_message(version_info)
 
 # Command: Displays a list of all available commands
