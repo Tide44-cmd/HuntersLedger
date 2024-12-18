@@ -109,17 +109,28 @@ async def process_platform(interaction: discord.Interaction, game_name: str, pla
         f"Game '{game_name}' has been added to the list under '{platform}'.",
         ephemeral=True
     )
-
+  
 # Command: Show all tracked hunts
 @bot.tree.command(name="showhunts", description="Show all games currently being managed")
 async def show_hunts(interaction: discord.Interaction):
-    c.execute("SELECT game_name, platform FROM games ORDER BY game_name ASC")
+    c.execute("SELECT game_name FROM games ORDER BY game_name ASC")
     games = c.fetchall()
     if games:
-        game_list = "\n".join([f"{game[0]} ({game[1]})" for game in games])
+        game_list = "\n".join([game[0] for game in games])
         await interaction.response.send_message(f"**Tracked Hunts:**\n{game_list}")
     else:
         await interaction.response.send_message("No games are currently being tracked.")
+
+## Command: Show all tracked hunts
+#@bot.tree.command(name="showhunts", description="Show all games currently being managed")
+#async def show_hunts(interaction: discord.Interaction):
+#    c.execute("SELECT game_name, platform FROM games ORDER BY game_name ASC")
+#    games = c.fetchall()
+#    if games:
+#        game_list = "\n".join([f"{game[0]} ({game[1]})" for game in games])
+#        await interaction.response.send_message(f"**Tracked Hunts:**\n{game_list}")
+#    else:
+#        await interaction.response.send_message("No games are currently being tracked.")
 
 # Command: Show who is hunting a specific game
 @bot.tree.command(name="whohunts", description="Show who is playing a specific game with a user count")
