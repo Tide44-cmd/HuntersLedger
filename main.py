@@ -55,7 +55,7 @@ async def on_ready():
     await bot.tree.sync()  # Global sync
     print(f"Logged in as {bot.user}!")
 
-# Command: Track a game with platform buttons
+# Command: Track a game with platform in the game title
 @bot.tree.command(name="trackhunt", description="Add a game to the list")
 async def track_hunt(interaction: discord.Interaction, game_name: str):
     # Check if the game is already in the database
@@ -63,11 +63,25 @@ async def track_hunt(interaction: discord.Interaction, game_name: str):
     if c.fetchone():
         await interaction.response.send_message(f"The game '{game_name}' is already being tracked.")
     else:
-        await interaction.response.send_message(
-            f"Select a platform for '{game_name}':",
-            view=PlatformView(game_name),
-            ephemeral=True
-        )
+        # Insert the game into the database
+        c.execute("INSERT INTO games (game_name) VALUES (?)", (game_name,))
+        conn.commit()
+        await interaction.response.send_message(f"Game '{game_name}' has been added to the list.")
+
+
+## Command: Track a game with platform buttons
+#@bot.tree.command(name="trackhunt", description="Add a game to the list")
+#async def track_hunt(interaction: discord.Interaction, game_name: str):
+#    # Check if the game is already in the database
+#    c.execute("SELECT * FROM games WHERE game_name = ?", (game_name,))
+#    if c.fetchone():
+#        await interaction.response.send_message(f"The game '{game_name}' is already being tracked.")
+#    else:
+#        await interaction.response.send_message(
+#            f"Select a platform for '{game_name}':",
+#            view=PlatformView(game_name),
+#            ephemeral=True
+#        )
 
 # View with buttons for platform selection
 class PlatformView(discord.ui.View):  # Replace ui.View with discord.ui.View
@@ -99,7 +113,7 @@ async def process_platform(interaction: discord.Interaction, game_name: str, pla
 # Command: Show all tracked hunts
 @bot.tree.command(name="showhunts", description="Show all games currently being managed")
 async def show_hunts(interaction: discord.Interaction):
-    c.execute("SELECT game_name, platform FROM games")
+    c.execute("SELECT game_name, platform FROM games ORDER BY game_name ASC")
     games = c.fetchall()
     if games:
         game_list = "\n".join([f"{game[0]} ({game[1]})" for game in games])
@@ -176,7 +190,8 @@ async def show_my_hunts(interaction: discord.Interaction):
     c.execute('''SELECT g.game_name 
                  FROM games g 
                  JOIN user_games ug ON g.id = ug.game_id 
-                 WHERE ug.user_id = ?''', (user_id,))
+                 WHERE ug.user_id = ? 
+                 ORDER BY g.game_name ASC''', (user_id,))
     games = c.fetchall()
     if games:
         game_list = "\n".join([game[0] for game in games])
@@ -191,7 +206,8 @@ async def show_hunter(interaction: Interaction, user: discord.User):
     c.execute('''SELECT g.game_name 
                  FROM games g 
                  JOIN user_games ug ON g.id = ug.game_id 
-                 WHERE ug.user_id = ?''', (user_id,))
+                 WHERE ug.user_id = ? 
+                 ORDER BY g.game_name ASC''', (user_id,))
     games = c.fetchall()
     if games:
         game_list = "\n".join([game[0] for game in games])
