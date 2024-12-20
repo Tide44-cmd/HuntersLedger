@@ -295,11 +295,9 @@ async def forget_hunter(interaction: Interaction, user: discord.User):
     conn.commit()
     await interaction.response.send_message(f"{user.mention} has been removed from all games.")
 
-# Command: Show bot version and information
-@bot.tree.command(name="botversion", description="Show bot version and additional information")
-async def bot_version(interaction: Interaction):
-    version_info = "**A Hunters Ledger v2.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/HuntersLedger)"
-    await interaction.response.send_message(version_info)
+
+
+# Solo Backlog Management Commands
 
 # Command: /newhunt
 @bot.tree.command(name="newhunt", description="Add a game to your solo backlog with the status 'not started.'")
@@ -312,7 +310,7 @@ async def new_hunt(interaction: discord.Interaction, game_name: str):
 # Command: /mysolohunts
 @bot.tree.command(name="mysolohunts", description="Display your solo backlog with statuses ('not started' or 'in progress').")
 async def my_solo_hunts(interaction: discord.Interaction):
-    c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ?', (interaction.user.id,))
+    c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ? ORDER BY game_name ASC', (interaction.user.id,))
     games = c.fetchall()
     if games:
         response = "\n".join([f"{game[0]} - {game[1]}" for game in games])
@@ -350,6 +348,7 @@ async def my_finished_hunts(interaction: discord.Interaction, month: int = None,
     if month and year:
         query += ' AND strftime("%m", completion_date) = ? AND strftime("%Y", completion_date) = ?'
         params.extend([f"{int(month):02}", str(year)])
+    query += ' ORDER BY game_name ASC'
     c.execute(query, tuple(params))
     games = c.fetchall()
     if games:
@@ -430,6 +429,18 @@ async def help_command(interaction: discord.Interaction):
 Need further assistance? Feel free to ask!
 """
     await interaction.response.send_message(help_text)
+  
+# Command: Check who added a specific game (Admin only).
+@bot.tree.command(name="whoadded", description="Check who added a specific game (Admin only).")
+@commands.has_permissions(administrator=True)
+async def who_added(interaction: discord.Interaction, game_name: str):
+    c.execute("SELECT user FROM logs WHERE command = 'trackhunt' AND game_name = ?", (game_name,))
+    users = c.fetchall()
+    if users:
+        user_list = "\n".join([user[0] for user in users])
+        await interaction.response.send_message(f"Users who added '{game_name}':\n{user_list}")
+    else:
+        await interaction.response.send_message(f"No records found for the game '{game_name}'.")
 
 # Command: Call all hunters for a specific game
 @bot.tree.command(name="callhunters", description="Tag all users signed up to a specific game")
@@ -444,6 +455,12 @@ async def call_hunters(interaction: Interaction, game_name: str):
         await interaction.response.send_message(f"Calling all hunters for '{game_name}':\n{mentions}")
     else:
         await interaction.response.send_message(f"No hunters are signed up for '{game_name}'.")
+
+# Command: Show bot version and information
+@bot.tree.command(name="botversion", description="Show bot version and additional information")
+async def bot_version(interaction: Interaction):
+    version_info = "**A Hunters Ledger v2.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/HuntersLedger)"
+    await interaction.response.send_message(version_info)
 
 # Command: Healthcheck
 @bot.tree.command(name="healthcheck", description="Checks the bot's status and health")
