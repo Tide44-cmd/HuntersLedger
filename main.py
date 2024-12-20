@@ -302,46 +302,51 @@ async def bot_version(interaction: Interaction):
     await interaction.response.send_message(version_info)
 
 # Command: /newhunt
-async def new_hunt(ctx, game_name):
+@bot.tree.command(name="newhunt", description="Add a game to your solo backlog with the status 'not started.'")
+async def new_hunt(interaction: discord.Interaction, game_name: str):
     c.execute('INSERT INTO solo_backlogs (user_id, user_name, game_name) VALUES (?, ?, ?)',
-              (ctx.author.id, ctx.author.name, game_name))
+              (interaction.user.id, interaction.user.name, game_name))
     conn.commit()
-    await ctx.send(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
+    await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
 
 # Command: /mysolohunts
-async def my_solo_hunts(ctx):
-    c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ?', (ctx.author.id,))
+@bot.tree.command(name="mysolohunts", description="Display your solo backlog with statuses ('not started' or 'in progress').")
+async def my_solo_hunts(interaction: discord.Interaction):
+    c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ?', (interaction.user.id,))
     games = c.fetchall()
     if games:
         response = "\n".join([f"{game[0]} - {game[1]}" for game in games])
-        await ctx.send(f"Your solo hunts:\n{response}")
+        await interaction.response.send_message(f"Your solo hunts:\n{response}")
     else:
-        await ctx.send("Your solo backlog is empty.")
+        await interaction.response.send_message("Your solo backlog is empty.")
 
 # Command: /starthunt
-async def start_hunt(ctx, game_name):
+@bot.tree.command(name="starthunt", description="Set a game's status to 'in progress.'")
+async def start_hunt(interaction: discord.Interaction, game_name: str):
     c.execute('UPDATE solo_backlogs SET status = "in progress" WHERE user_id = ? AND game_name = ? AND status = "not started"',
-              (ctx.author.id, game_name))
+              (interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
-        await ctx.send(f"Game '{game_name}' is now 'in progress'.")
+        await interaction.response.send_message(f"Game '{game_name}' is now 'in progress'.")
     else:
-        await ctx.send(f"Cannot start '{game_name}': either it doesn't exist or it's already started.")
+        await interaction.response.send_message(f"Cannot start '{game_name}': either it doesn't exist or it's already started.")
 
 # Command: /finishhunt
-async def finish_hunt(ctx, game_name):
+@bot.tree.command(name="finishhunt", description="Set a game's status to 'completed.'")
+async def finish_hunt(interaction: discord.Interaction, game_name: str):
     c.execute('UPDATE solo_backlogs SET status = "completed", completion_date = ? WHERE user_id = ? AND game_name = ? AND status = "in progress"',
-              (datetime.now().date(), ctx.author.id, game_name))
+              (datetime.now().date(), interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
-        await ctx.send(f"Game '{game_name}' is now 'completed'.")
+        await interaction.response.send_message(f"Game '{game_name}' is now 'completed'.")
     else:
-        await ctx.send(f"Cannot finish '{game_name}': either it doesn't exist or it's not in progress.")
+        await interaction.response.send_message(f"Cannot finish '{game_name}': either it doesn't exist or it's not in progress.")
 
 # Command: /myfinishedhunts
-async def my_finished_hunts(ctx, month=None, year=None):
+@bot.tree.command(name="myfinishedhunts", description="Show completed games, either all-time or for a specific month and year.")
+async def my_finished_hunts(interaction: discord.Interaction, month: int = None, year: int = None):
     query = 'SELECT game_name, completion_date FROM solo_backlogs WHERE user_id = ? AND status = "completed"'
-    params = [ctx.author.id]
+    params = [interaction.user.id]
     if month and year:
         query += ' AND strftime("%m", completion_date) = ? AND strftime("%Y", completion_date) = ?'
         params.extend([f"{int(month):02}", str(year)])
@@ -349,42 +354,45 @@ async def my_finished_hunts(ctx, month=None, year=None):
     games = c.fetchall()
     if games:
         response = "\n".join([f"{game[0]} - Completed on {game[1]}" for game in games])
-        await ctx.send(f"Your completed games:\n{response}")
+        await interaction.response.send_message(f"Your completed games:\n{response}")
     else:
-        await ctx.send("No completed games found for the specified period.")
+        await interaction.response.send_message("No completed games found for the specified period.")
 
 # Command: /givemeahunt
-async def give_me_a_hunt(ctx):
-    c.execute('SELECT game_name FROM solo_backlogs WHERE user_id = ? AND status = "not started"', (ctx.author.id,))
+@bot.tree.command(name="givemeahunt", description="Randomly select a hunt from your backlog and set it to 'in progress.'")
+async def give_me_a_hunt(interaction: discord.Interaction):
+    c.execute('SELECT game_name FROM solo_backlogs WHERE user_id = ? AND status = "not started"', (interaction.user.id,))
     games = [game[0] for game in c.fetchall()]
     if games:
         selected_game = random.choice(games)
         c.execute('UPDATE solo_backlogs SET status = "in progress" WHERE user_id = ? AND game_name = ?',
-                  (ctx.author.id, selected_game))
+                  (interaction.user.id, selected_game))
         conn.commit()
-        await ctx.send(f"Your next hunt: '{selected_game}' is now 'in progress'.")
+        await interaction.response.send_message(f"Your next hunt: '{selected_game}' is now 'in progress'.")
     else:
-        await ctx.send("No games available in your backlog to hunt.")
+        await interaction.response.send_message("No games available in your backlog to hunt.")
 
 # Command: /ratehunt
-async def rate_hunt(ctx, game_name, rating, comments=None):
+@bot.tree.command(name="ratehunt", description="Rate a completed game and leave optional comments.")
+async def rate_hunt(interaction: discord.Interaction, game_name: str, rating: int, comments: str = None):
     c.execute('UPDATE solo_backlogs SET rating = ?, comments = ? WHERE user_id = ? AND game_name = ? AND status = "completed"',
-              (rating, comments, ctx.author.id, game_name))
+              (rating, comments, interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
-        await ctx.send(f"Rating added for '{game_name}': {rating}/5. {comments if comments else ''}")
+        await interaction.response.send_message(f"Rating added for '{game_name}': {rating}/5. {comments if comments else ''}")
     else:
-        await ctx.send(f"Cannot rate '{game_name}': either it doesn't exist or it hasn't been completed.")
+        await interaction.response.send_message(f"Cannot rate '{game_name}': either it doesn't exist or it hasn't been completed.")
 
 # Command: /huntfeedback
-async def hunt_feedback(ctx, game_name):
+@bot.tree.command(name="huntfeedback", description="View feedback and ratings left by others for a specific game.")
+async def hunt_feedback(interaction: discord.Interaction, game_name: str):
     c.execute('SELECT user_name, rating, comments FROM solo_backlogs WHERE game_name = ? AND rating IS NOT NULL', (game_name,))
     feedback = c.fetchall()
     if feedback:
         response = "\n".join([f"{fb[0]}: {fb[1]}/5 - {fb[2]}" for fb in feedback])
-        await ctx.send(f"Feedback for '{game_name}':\n{response}")
+        await interaction.response.send_message(f"Feedback for '{game_name}':\n{response}")
     else:
-        await ctx.send(f"No feedback found for '{game_name}'.")
+        await interaction.response.send_message(f"No feedback found for '{game_name}'.")
 
 # Command: Displays a list of all available commands
 @bot.tree.command(name="help", description="Displays a list of all available commands.")
