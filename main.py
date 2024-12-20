@@ -8,6 +8,7 @@ import os
 import time
 from datetime import timedelta
 from dotenv import load_dotenv
+import random
 
 # Load environment variables
 load_dotenv()
@@ -40,6 +41,16 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs (
                 user TEXT NOT NULL,
                 command TEXT NOT NULL,
                 game_name TEXT
+            )''')
+c.execute('''CREATE TABLE IF NOT EXISTS solo_backlogs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                game_name TEXT NOT NULL,
+                status TEXT CHECK(status IN ('not started', 'in progress', 'completed')) DEFAULT 'not started',
+                completion_date DATE,
+                rating INTEGER CHECK(rating BETWEEN 1 AND 5),
+                comments TEXT
             )''')
 conn.commit()
 
@@ -291,26 +302,40 @@ async def bot_version(interaction: Interaction):
     await interaction.response.send_message(version_info)
 
 # Command: Displays a list of all available commands
-@bot.tree.command(name="help", description="Displays a list of all available commands")
-async def help_command(interaction: Interaction):
+@bot.tree.command(name="help", description="Displays a list of all available commands.")
+async def help_command(interaction: discord.Interaction):
     help_text = """
-    **Available Commands:**
-    /trackhunt "game name" - Add a game to the list
-    /showhunts - Show all games currently being managed
-    /whohunts "game name" - Show who is playing a specific game
-    /joinhunt "game name" - Add yourself to a game's player list
-    /leavehunt "game name" - Remove yourself from a game's player list
-    /showmyhunts - Show all games you are added to
-    /showhunter @user - Show all games a user is added to
-    /mosthunted - Show the top 5 most popular games
-    /nothunted - Show a list of games with no users signed up
-    /changehunt "old name" "new name" - Rename a game in the database
-    ?forgethunt "game name" - Remove a game from the list (Admin Only)
-    ?forgethunter @user - Remove a user from all games (Admin Only)
-    /botversion - Show bot version and additional information
-    /callhunters "game name" - Tag all users signed up to a specific game
-    /healthcheck - Check the bot's status and health
-    """
+**Haven's Helper Commands:**
+
+- **Co-op and Multiplayer Backlog Management:**
+  - `/trackhunt "game name"` - Add a game to the co-op backlog.
+  - `/showhunts` - Show all games currently being managed.
+  - `/whohunts "game name"` - Show who is playing a specific game.
+  - `/joinhunt "game name"` - Add yourself to a game's player list.
+  - `/leavehunt "game name"` - Remove yourself from a game's player list.
+  - `/showmyhunts` - Show all games you are added to.
+  - `/showhunter @user` - Show all games a user is added to.
+  - `/mosthunted` - Show the top 5 most popular games.
+  - `/nothunted` - Show a list of games with no users signed up.
+  - `/changehunt "old name" "new name"` - Rename a game in the database.
+  - `/callhunters "game name"` - Tag all users signed up to a specific game.
+
+- **Solo Backlog Management:**
+  - `/newhunt "game name"` - Add a game to your solo backlog with the status "not started."
+  - `/mysolohunts` - Display your solo backlog with statuses ("not started" or "in progress").
+  - `/starthunt "game name"` - Set a game's status to "in progress."
+  - `/finishhunt "game name"` - Set a game's status to "completed."
+  - `/myfinishedhunts [Month] [Year]` - Show completed games, either all-time or for a specific month and year.
+  - `/givemeahunt` - Randomly select a hunt from your backlog and set it to "in progress."
+  - `/ratehunt "game name" "rating out of 5" [comments]` - Rate a completed game and leave optional comments.
+  - `/huntfeedback "game name"` - View feedback and ratings left by others for a specific game.
+
+- **Bot Information:**
+  - `/botversion` - Displays the bot's version and additional information.
+  - `/healthcheck` - Check the bot's status and health.
+
+Need further assistance? Feel free to ask!
+"""
     await interaction.response.send_message(help_text)
 
 # Command: Call all hunters for a specific game
