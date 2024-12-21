@@ -315,16 +315,18 @@ async def new_hunt(interaction: discord.Interaction, game_name: str):
     await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
 
 
-# Command: /mysolohunts
+# Command: /mysolohunts - Display your solo backlog with statuses ('not started' or 'in progress')
 @bot.tree.command(name="mysolohunts", description="Display your solo backlog with statuses ('not started' or 'in progress').")
 async def my_solo_hunts(interaction: discord.Interaction):
     c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ? ORDER BY status DESC, game_name ASC', (interaction.user.id,))
     games = c.fetchall()
     
     if games:
-        in_progress = [f"{game[0]} - {game[1]}" for game in games if game[1] == "in progress"]
-        not_started = [f"{game[0]} - {game[1]}" for game in games if game[1] == "not started"]
+        # Separate games by status
+        in_progress = [game[0] for game in games if game[1] == "in progress"]
+        not_started = [game[0] for game in games if game[1] == "not started"]
         
+        # Build response
         response = ""
         if in_progress:
             response += "**In Progress:**\n" + "\n".join(in_progress) + "\n\n"
@@ -334,6 +336,7 @@ async def my_solo_hunts(interaction: discord.Interaction):
         await interaction.response.send_message(f"Your solo hunts:\n{response}")
     else:
         await interaction.response.send_message("Your solo backlog is empty.")
+
 
 # Command: /starthunt
 @bot.tree.command(name="starthunt", description="Set a game's status to 'in progress.'")
