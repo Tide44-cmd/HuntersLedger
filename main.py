@@ -302,10 +302,18 @@ async def forget_hunter(interaction: Interaction, user: discord.User):
 # Command: /newhunt
 @bot.tree.command(name="newhunt", description="Add a game to your solo backlog with the status 'not started.'")
 async def new_hunt(interaction: discord.Interaction, game_name: str):
+    # Check if the game already exists for the user
+    c.execute('SELECT COUNT(*) FROM solo_backlogs WHERE user_id = ? AND game_name = ?', (interaction.user.id, game_name))
+    if c.fetchone()[0] > 0:
+        await interaction.response.send_message(f"Game '{game_name}' is already in your solo backlog.")
+        return
+
+    # Add the game if it doesn't exist
     c.execute('INSERT INTO solo_backlogs (user_id, user_name, game_name) VALUES (?, ?, ?)',
               (interaction.user.id, interaction.user.name, game_name))
     conn.commit()
     await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
+
 
 # Command: /mysolohunts
 @bot.tree.command(name="mysolohunts", description="Display your solo backlog with statuses ('not started' or 'in progress').")
@@ -338,11 +346,23 @@ async def start_hunt(interaction: discord.Interaction, game_name: str):
     else:
         await interaction.response.send_message(f"Cannot start '{game_name}': either it doesn't exist or it's already started.")
 
+# Command: /giveup - Remove a game from your solo backlog.
+@bot.tree.command(name="giveup", description="Remove a game from your solo backlog.")
+async def give_up(interaction: discord.Interaction, game_name: str):
+    c.execute('DELETE FROM solo_backlogs WHERE user_id = ? AND game_name = ?', (interaction.user.id, game_name))
+    conn.commit()
+    if c.rowcount:
+        await interaction.response.send_message(f"Game '{game_name}' has been removed from your solo backlog.")
+    else:
+        await interaction.response.send_message(f"Cannot find the game '{game_name}' in your solo backlog.")
+
+
 # Command: /finishhunt
 @bot.tree.command(name="finishhunt", description="Set a game's status to 'completed.'")
 async def finish_hunt(interaction: discord.Interaction, game_name: str):
-    c.execute('UPDATE solo_backlogs SET status = "completed", completion_date = ? WHERE user_id = ? AND game_name = ? AND status = "in progress"',
-              (datetime.now().date(), interaction.user.id, game_name))
+    # Update the game's status to 'completed' with the current date
+    c.execute('UPDATE solo_backlogs SET status = "completed", completion_date = DATE("now") WHERE user_id = ? AND game_name = ? AND status = "in progress"',
+              (interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
         await interaction.response.send_message(f"Game '{game_name}' is now 'completed'.")
@@ -464,6 +484,19 @@ async def call_hunters(interaction: Interaction, game_name: str):
         await interaction.response.send_message(f"Calling all hunters for '{game_name}':\n{mentions}")
     else:
         await interaction.response.send_message(f"No hunters are signed up for '{game_name}'.")
+
+# Command: Tags all users singed up for any game with a custom message
+@bot.tree.command(name="remindhunters", description="Tag all unique users signed up for any game with an optional message.")
+async def remind_hunters(interaction: discord.Interaction, message: str = "Hi hunters, please review your backlog and remove any invalid entries!"):
+    # Query unique users from the user_games table
+    c.execute('SELECT DISTINCT user_id FROM user_games')
+    users = c.fetchall()
+
+    if users:
+        mentions = " ".join([f"<@{user[0]}>" for user in users])
+        await interaction.response.send_message(f"{message}\n\n{mentions}")
+    else:
+        await interaction.response.send_message("No users are currently signed up for any games.")
 
 # Command: Show bot version and information
 @bot.tree.command(name="botversion", description="Show bot version and additional information")
