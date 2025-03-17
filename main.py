@@ -536,11 +536,11 @@ async def healthcheck(interaction: Interaction):
     await interaction.response.send_message(health_report)
   
 # Command: Progress Graph
-@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph (mobile friendly).")
+@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph (mobile friendly PNG).")
 async def my_progress_graph(interaction: discord.Interaction):
     import pygal
     import io
-    import cairosvg  # For SVG to PNG conversion
+    import cairosvg
 
     user_id = str(interaction.user.id)
     c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
@@ -550,27 +550,26 @@ async def my_progress_graph(interaction: discord.Interaction):
         await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
         return
 
-    # Generate SVG graph
+    # Generate SVG using Pygal
     pie_chart = pygal.Pie()
     pie_chart.title = f"{interaction.user.name}'s Solo Backlog Progress"
     for status, count in data:
         pie_chart.add(status.capitalize(), count)
 
-    # Render SVG to memory
-    svg_buffer = io.BytesIO()
-    pie_chart.render_to_file(svg_buffer)
-    svg_buffer.seek(0)
+    # Render SVG to bytes (correct way to keep in memory)
+    svg_data = pie_chart.render()
 
-    # Convert SVG to PNG in memory
+    # Convert SVG to PNG using CairoSVG
     png_buffer = io.BytesIO()
-    cairosvg.svg2png(bytestring=svg_buffer.getvalue(), write_to=png_buffer)
-    png_buffer.seek(0)
+    cairosvg.svg2png(bytestring=svg_data, write_to=png_buffer)
+    png_buffer.seek(0)  # Important to reset the buffer before sending
 
-    # Send as PNG file (viewable on all platforms)
+    # Send PNG file to Discord
     await interaction.response.send_message(
         content=f"{interaction.user.mention}, here is your backlog progress graph:",
         file=discord.File(png_buffer, filename="progress.png")
     )
+
 
 
 
