@@ -9,6 +9,8 @@ import time
 from datetime import timedelta
 from dotenv import load_dotenv
 import random
+import matplotlib.pyplot as plt
+import io
 
 # Load environment variables
 load_dotenv()
@@ -537,8 +539,6 @@ async def healthcheck(interaction: Interaction):
 # Command: Progress Graph
 @bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph.")
 async def my_progress_graph(interaction: discord.Interaction):
-    import matplotlib.pyplot as plt
-    import io
 
     user_id = str(interaction.user.id)
     c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
@@ -548,16 +548,21 @@ async def my_progress_graph(interaction: discord.Interaction):
         await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
         return
 
-    labels, counts = zip(*data)
+    labels, counts = zip(*data)  # Unzip into labels and values
+
+    # Plot the pie chart
     plt.figure(figsize=(6, 6))
     plt.pie(counts, labels=labels, autopct='%1.1f%%', startangle=140)
     plt.title(f"{interaction.user.name}'s Solo Backlog Progress")
 
+    # Save to buffer
     buffer = io.BytesIO()
     plt.savefig(buffer, format='PNG')
     buffer.seek(0)
-    await interaction.response.send_message(file=discord.File(buffer, filename="progress.png"))
+    plt.close()  # Close figure to avoid overlap in next use
 
+    # Send file
+    await interaction.response.send_message(file=discord.File(buffer, filename="progress.png"))
 
 # Run the bot
 bot.run(TOKEN)
