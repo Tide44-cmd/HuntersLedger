@@ -550,27 +550,28 @@ async def my_progress_graph(interaction: discord.Interaction):
         await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
         return
 
+    # Defer the interaction (prevent Discord from timing out)
+    await interaction.response.defer()
+
     # Generate SVG using Pygal
     pie_chart = pygal.Pie()
     pie_chart.title = f"{interaction.user.name}'s Solo Backlog Progress"
     for status, count in data:
         pie_chart.add(status.capitalize(), count)
 
-    # Render SVG to bytes (correct way to keep in memory)
+    # Render SVG to bytes (in memory)
     svg_data = pie_chart.render()
 
     # Convert SVG to PNG using CairoSVG
     png_buffer = io.BytesIO()
     cairosvg.svg2png(bytestring=svg_data, write_to=png_buffer)
-    png_buffer.seek(0)  # Important to reset the buffer before sending
+    png_buffer.seek(0)  # Reset buffer before sending
 
-    # Send PNG file to Discord
-    await interaction.response.send_message(
+    # Send PNG file as a follow-up (since interaction is deferred)
+    await interaction.followup.send(
         content=f"{interaction.user.mention}, here is your backlog progress graph:",
         file=discord.File(png_buffer, filename="progress.png")
     )
-
-
 
 
 # Run the bot
