@@ -533,6 +533,31 @@ async def healthcheck(interaction: Interaction):
     )
     
     await interaction.response.send_message(health_report)
+  
+# Command: Progress Graph
+@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph.")
+async def my_progress_graph(interaction: discord.Interaction):
+    import matplotlib.pyplot as plt
+    import io
+
+    user_id = str(interaction.user.id)
+    c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
+    data = c.fetchall()
+
+    if not data:
+        await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
+        return
+
+    labels, counts = zip(*data)
+    plt.figure(figsize=(6, 6))
+    plt.pie(counts, labels=labels, autopct='%1.1f%%', startangle=140)
+    plt.title(f"{interaction.user.name}'s Solo Backlog Progress")
+
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='PNG')
+    buffer.seek(0)
+    await interaction.response.send_message(file=discord.File(buffer, filename="progress.png"))
+
 
 # Run the bot
 bot.run(TOKEN)
