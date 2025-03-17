@@ -9,8 +9,7 @@ import time
 from datetime import timedelta
 from dotenv import load_dotenv
 import random
-import matplotlib.pyplot as plt
-import io
+
 
 # Load environment variables
 load_dotenv()
@@ -537,8 +536,10 @@ async def healthcheck(interaction: Interaction):
     await interaction.response.send_message(health_report)
   
 # Command: Progress Graph
-@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph.")
+@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a lightweight graph (SVG).")
 async def my_progress_graph(interaction: discord.Interaction):
+    import pygal
+    import io
 
     user_id = str(interaction.user.id)
     c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
@@ -548,21 +549,25 @@ async def my_progress_graph(interaction: discord.Interaction):
         await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
         return
 
-    labels, counts = zip(*data)  # Unzip into labels and values
+    # Create Pie Chart
+    pie_chart = pygal.Pie()
+    pie_chart.title = f"{interaction.user.name}'s Solo Backlog Progress"
 
-    # Plot the pie chart
-    plt.figure(figsize=(6, 6))
-    plt.pie(counts, labels=labels, autopct='%1.1f%%', startangle=140)
-    plt.title(f"{interaction.user.name}'s Solo Backlog Progress")
+    for status, count in data:
+        pie_chart.add(status.capitalize(), count)
 
-    # Save to buffer
+    # Render chart to an in-memory buffer
     buffer = io.BytesIO()
-    plt.savefig(buffer, format='PNG')
-    buffer.seek(0)
-    plt.close()  # Close figure to avoid overlap in next use
+    pie_chart.render_to_file('/tmp/progress.svg')  # Save temporarily
+    with open('/tmp/progress.svg', 'rb') as f:
+        svg_data = f.read()
 
-    # Send file
-    await interaction.response.send_message(file=discord.File(buffer, filename="progress.png"))
+    # Send SVG as file
+    await interaction.response.send_message(
+        content=f"{interaction.user.mention}, here is your backlog progress graph:",
+        file=discord.File(io.BytesIO(svg_data), filename="progress.svg")
+    )
+
 
 # Run the bot
 bot.run(TOKEN)
