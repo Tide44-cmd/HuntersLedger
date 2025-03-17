@@ -536,10 +536,11 @@ async def healthcheck(interaction: Interaction):
     await interaction.response.send_message(health_report)
   
 # Command: Progress Graph
-@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a lightweight graph (SVG).")
+@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph (mobile friendly).")
 async def my_progress_graph(interaction: discord.Interaction):
     import pygal
     import io
+    import cairosvg  # For SVG to PNG conversion
 
     user_id = str(interaction.user.id)
     c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
@@ -549,24 +550,28 @@ async def my_progress_graph(interaction: discord.Interaction):
         await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
         return
 
-    # Create Pie Chart
+    # Generate SVG graph
     pie_chart = pygal.Pie()
     pie_chart.title = f"{interaction.user.name}'s Solo Backlog Progress"
-
     for status, count in data:
         pie_chart.add(status.capitalize(), count)
 
-    # Render chart to an in-memory buffer
-    buffer = io.BytesIO()
-    pie_chart.render_to_file('/tmp/progress.svg')  # Save temporarily
-    with open('/tmp/progress.svg', 'rb') as f:
-        svg_data = f.read()
+    # Render SVG to memory
+    svg_buffer = io.BytesIO()
+    pie_chart.render_to_file(svg_buffer)
+    svg_buffer.seek(0)
 
-    # Send SVG as file
+    # Convert SVG to PNG in memory
+    png_buffer = io.BytesIO()
+    cairosvg.svg2png(bytestring=svg_buffer.getvalue(), write_to=png_buffer)
+    png_buffer.seek(0)
+
+    # Send as PNG file (viewable on all platforms)
     await interaction.response.send_message(
         content=f"{interaction.user.mention}, here is your backlog progress graph:",
-        file=discord.File(io.BytesIO(svg_data), filename="progress.svg")
+        file=discord.File(png_buffer, filename="progress.png")
     )
+
 
 
 # Run the bot
