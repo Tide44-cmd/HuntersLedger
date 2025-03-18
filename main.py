@@ -582,43 +582,49 @@ import os
 # Background image path (Replace with your custom themed background)
 BACKGROUND_IMAGE_PATH = "background.jpg"
 
-# Font Path (Make sure MedievalSharp.ttf is in the same directory)
+# Font Paths (Ensure these exist in your directory)
 FONT_PATH = "MedievalSharp.ttf"
-FONT_SIZE = 48
+
+# Font Sizes
+GAME_NAME_FONT_SIZE = 72  # Larger for game title
+TEXT_FONT_SIZE = 48  # Standard for other details
 
 async def generate_completion_banner(game_name, user_name, completion_date):
-    # Load images
-    background = Image.open('background.jpg').convert('RGBA')
-    xbox_logo = Image.open('xbox_logo.png').convert('RGBA')
-    calendar_icon = Image.open('calendar_icon.png').convert('RGBA')
+    try:
+        # Load images
+        background = Image.open(BACKGROUND_IMAGE_PATH).convert('RGBA')
+        xbox_logo = Image.open("xbox_logo.png").convert('RGBA')
+        calendar_icon = Image.open("calendar_icon.png").convert('RGBA')
 
-    # Resize icons
-    icon_size = (50, 50)
-    xbox_logo.thumbnail(icon_size)
-    calendar_icon.thumbnail(icon_size)
+        # Resize icons
+        icon_size = (50, 50)
+        xbox_logo.thumbnail(icon_size)
+        calendar_icon.thumbnail(icon_size)
 
-    # Create drawing context
-    draw = ImageDraw.Draw(background)
-    font = ImageFont.truetype('MedievalSharp.ttf', 48)
+        # Create drawing context
+        draw = ImageDraw.Draw(background)
+        game_font = ImageFont.truetype(FONT_PATH, GAME_NAME_FONT_SIZE)
+        text_font = ImageFont.truetype(FONT_PATH, TEXT_FONT_SIZE)
 
-    # Define positions
-    game_name_position = (100, 50)
-    xbox_logo_position = (100, 150)
-    user_name_position = (160, 150)
-    calendar_icon_position = (100, 220)
-    completion_date_position = (160, 220)
+        # Define positions (Aligned at the top-left)
+        game_name_position = (100, 50)
+        xbox_logo_position = (100, 180)
+        user_name_position = (160, 190)
+        calendar_icon_position = (100, 260)
+        completion_date_position = (160, 270)
 
-    # Draw text and icons
-    draw.text(game_name_position, game_name, font=font, fill='white')
-    background.paste(xbox_logo, xbox_logo_position, xbox_logo)
-    draw.text(user_name_position, user_name, font=font, fill='white')
-    background.paste(calendar_icon, calendar_icon_position, calendar_icon)
-    draw.text(completion_date_position, completion_date, font=font, fill='white')
+        # Draw text
+        draw.text(game_name_position, game_name, font=game_font, fill='white')
+        background.paste(xbox_logo, xbox_logo_position, xbox_logo)
+        draw.text(user_name_position, f"Completed by: {user_name}", font=text_font, fill='white')
+        background.paste(calendar_icon, calendar_icon_position, calendar_icon)
+        draw.text(completion_date_position, f"Date: {completion_date}", font=text_font, fill='white')
 
-    # Save the image
-    output_path = f'completion_{user_name}.png'
-    background.save(output_path)
-    return output_path
+        # Save the image
+        output_path = f'completion_{user_name}.png'
+        background.save(output_path)
+        return output_path
+
     except Exception as e:
         print(f"Error generating banner: {e}")
         return None
@@ -655,7 +661,6 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
             await interaction.followup.send("Error generating the completion card. Please try again later.")
     else:
         await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
-
 
 
 # Test image generate End
