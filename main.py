@@ -587,28 +587,38 @@ FONT_PATH = "MedievalSharp.ttf"
 FONT_SIZE = 48
 
 async def generate_completion_banner(game_name, user_name, completion_date):
-    """Generates a completion banner image."""
-    try:
-        img = Image.open(BACKGROUND_IMAGE_PATH)
-        draw = ImageDraw.Draw(img)
+    # Load images
+    background = Image.open('background.jpg').convert('RGBA')
+    xbox_logo = Image.open('xbox_logo.png').convert('RGBA')
+    calendar_icon = Image.open('calendar_icon.png').convert('RGBA')
 
-        # Load font
-        font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    # Resize icons
+    icon_size = (50, 50)
+    xbox_logo.thumbnail(icon_size)
+    calendar_icon.thumbnail(icon_size)
 
-        # Set text positions (Adjust based on background design)
-        text_position_game = (100, 500)
-        text_position_user = (100, 600)
-        text_position_date = (100, 700)
+    # Create drawing context
+    draw = ImageDraw.Draw(background)
+    font = ImageFont.truetype('MedievalSharp.ttf', 48)
 
-        # Add text to the image
-        draw.text(text_position_game, f"Game: {game_name}", fill="white", font=font)
-        draw.text(text_position_user, f"Completed by: {user_name}", fill="white", font=font)
-        draw.text(text_position_date, f"Date: {completion_date}", fill="white", font=font)
+    # Define positions
+    game_name_position = (100, 50)
+    xbox_logo_position = (100, 150)
+    user_name_position = (160, 150)
+    calendar_icon_position = (100, 220)
+    completion_date_position = (160, 220)
 
-        # Save and return the image path
-        output_path = f"completion_{user_name}.png"
-        img.save(output_path)
-        return output_path
+    # Draw text and icons
+    draw.text(game_name_position, game_name, font=font, fill='white')
+    background.paste(xbox_logo, xbox_logo_position, xbox_logo)
+    draw.text(user_name_position, user_name, font=font, fill='white')
+    background.paste(calendar_icon, calendar_icon_position, calendar_icon)
+    draw.text(completion_date_position, completion_date, font=font, fill='white')
+
+    # Save the image
+    output_path = f'completion_{user_name}.png'
+    background.save(output_path)
+    return output_path
     except Exception as e:
         print(f"Error generating banner: {e}")
         return None
