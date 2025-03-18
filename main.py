@@ -573,6 +573,79 @@ async def my_progress_graph(interaction: discord.Interaction):
         file=discord.File(png_buffer, filename="progress.png")
     )
 
+# Test Image generate here
+import discord
+from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
+import os
+
+# Background image path (Replace with your custom themed background)
+BACKGROUND_IMAGE_PATH = "background.jpg"
+
+# Font Path (Make sure MedievalSharp.ttf is in the same directory)
+FONT_PATH = "MedievalSharp.ttf"
+FONT_SIZE = 48
+
+async def generate_completion_banner(game_name, user_name, completion_date):
+    """Generates a completion banner image."""
+    try:
+        img = Image.open(BACKGROUND_IMAGE_PATH)
+        draw = ImageDraw.Draw(img)
+
+        # Load font
+        font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+
+        # Set text positions (Adjust based on background design)
+        text_position_game = (100, 500)
+        text_position_user = (100, 600)
+        text_position_date = (100, 700)
+
+        # Add text to the image
+        draw.text(text_position_game, f"Game: {game_name}", fill="white", font=font)
+        draw.text(text_position_user, f"Completed by: {user_name}", fill="white", font=font)
+        draw.text(text_position_date, f"Date: {completion_date}", fill="white", font=font)
+
+        # Save and return the image path
+        output_path = f"completion_{user_name}.png"
+        img.save(output_path)
+        return output_path
+    except Exception as e:
+        print(f"Error generating banner: {e}")
+        return None
+
+@bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
+async def generate_card(interaction: discord.Interaction, game_name: str):
+    user_id = str(interaction.user.id)
+    user_name = interaction.user.display_name
+
+    # Check if the game is completed
+    c.execute("SELECT completion_date FROM solo_backlogs WHERE user_id = ? AND game_name = ? AND status = 'completed'", 
+              (user_id, game_name))
+    result = c.fetchone()
+
+    if result:
+        completion_date = result[0]
+
+        # Generate the banner
+        banner_path = await generate_completion_banner(game_name, user_name, completion_date)
+
+        if banner_path:
+            # Send the image to Discord
+            await interaction.response.send_message(
+                f"Here is your completion card, {interaction.user.mention}! 🎉",
+                file=discord.File(banner_path)
+            )
+
+            # Clean up the image after sending
+            os.remove(banner_path)
+        else:
+            await interaction.response.send_message("Error generating the completion card. Please try again later.")
+    else:
+        await interaction.response.send_message(f"You have not completed '{game_name}', so a card cannot be generated.")
+
+
+# Test image generate End
+
 
 # Run the bot
 bot.run(TOKEN)
