@@ -618,6 +618,9 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
 
+    # Defer response to prevent timeout
+    await interaction.response.defer()
+
     # Check if the game is completed
     c.execute("SELECT completion_date FROM solo_backlogs WHERE user_id = ? AND game_name = ? AND status = 'completed'", 
               (user_id, game_name))
@@ -630,8 +633,8 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
         banner_path = await generate_completion_banner(game_name, user_name, completion_date)
 
         if banner_path:
-            # Send the image to Discord
-            await interaction.response.send_message(
+            # Follow-up response since we deferred earlier
+            await interaction.followup.send(
                 f"Here is your completion card, {interaction.user.mention}! 🎉",
                 file=discord.File(banner_path)
             )
@@ -639,9 +642,10 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
             # Clean up the image after sending
             os.remove(banner_path)
         else:
-            await interaction.response.send_message("Error generating the completion card. Please try again later.")
+            await interaction.followup.send("Error generating the completion card. Please try again later.")
     else:
-        await interaction.response.send_message(f"You have not completed '{game_name}', so a card cannot be generated.")
+        await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
+
 
 
 # Test image generate End
