@@ -7,6 +7,7 @@ import sqlite3
 import os
 import time
 from datetime import timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 import random
 
@@ -609,9 +610,9 @@ async def generate_completion_banner(game_name, user_name, completion_date):
         # Define positions (Aligned at the top-left)
         game_name_position = (100, 50)
         xbox_logo_position = (100, 180)
-        user_name_position = (160, 190)
+        user_name_position = (160, 175)
         calendar_icon_position = (100, 260)
-        completion_date_position = (160, 270)
+        completion_date_position = (160, 255)
 
         # Draw text
         draw.text(game_name_position, game_name, font=game_font, fill='white')
@@ -643,7 +644,9 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
     result = c.fetchone()
 
     if result:
-        completion_date = result[0]
+        completion_date_raw = result[0]
+        completion_date_obj = datetime.strptime(completion_date_raw, "%Y-%m-%d")
+        completion_date = completion_date_obj.strftime("%-d %b %Y")  # Formats as "2 Feb 2025"
 
         # Generate the banner
         banner_path = await generate_completion_banner(game_name, user_name, completion_date)
