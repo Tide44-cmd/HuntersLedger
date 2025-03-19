@@ -603,7 +603,7 @@ TEXT_FONT_SIZE = 48  # Standard for other details
 
 # Profile Picture Settings
 AVATAR_SIZE = (100, 100)  # Size of profile picture
-AVATAR_POSITION = (100, 300)  # Adjust as needed
+
 
 async def generate_completion_banner(game_name, user_name, completion_date, avatar_url):
     try:
@@ -633,11 +633,12 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         text_font = ImageFont.truetype(FONT_PATH, TEXT_FONT_SIZE)
 
         # Define positions (Aligned at the top-left)
-        game_name_position = (100, 50)
+        AVATAR_POSITION = (100, 50)  # Adjust as needed
+        game_name_position = (210, 50)
         xbox_logo_position = (100, 180)
         user_name_position = (160, 175)  # Adjusted for alignment
         calendar_icon_position = (100, 260)
-        completion_date_position = (160, 270)
+        completion_date_position = (160, 255)
 
         # Draw text
         draw.text(game_name_position, game_name, font=game_font, fill='white')
