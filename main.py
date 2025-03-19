@@ -591,6 +591,15 @@ import os
 import requests
 from datetime import datetime
 
+def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
+    """Draws text with an outline for better readability."""
+    x, y = position
+    for dx in range(-outline_thickness, outline_thickness + 1):
+        for dy in range(-outline_thickness, outline_thickness + 1):
+            if dx != 0 or dy != 0:  # Only draw offsets, avoid duplicating center text
+                draw.text((x + dx, y + dy), text, font=font, fill=outline)
+    draw.text(position, text, font=font, fill=fill)  # Draw main text
+
 # Background image path
 BACKGROUND_IMAGE_PATH = "background.jpg"
 
@@ -641,11 +650,18 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         completion_date_position = (160, 255)
 
         # Draw text
-        draw.text(game_name_position, game_name, font=game_font, fill='white')
+        #draw.text(game_name_position, game_name, font=game_font, fill='white')
+        #background.paste(xbox_logo, xbox_logo_position, xbox_logo)
+        #draw.text(user_name_position, f"Completed by: {user_name}", font=text_font, fill='white')
+        #background.paste(calendar_icon, calendar_icon_position, calendar_icon)
+        #draw.text(completion_date_position, f"Date: {completion_date}", font=text_font, fill='white')
+
+        # Draw outlined text
+        draw_text_with_outline(draw, game_name_position, game_name, game_font)
         background.paste(xbox_logo, xbox_logo_position, xbox_logo)
-        draw.text(user_name_position, f"Completed by: {user_name}", font=text_font, fill='white')
+        draw_text_with_outline(draw, user_name_position, f"Completed by: {user_name}", text_font)
         background.paste(calendar_icon, calendar_icon_position, calendar_icon)
-        draw.text(completion_date_position, f"Date: {completion_date}", font=text_font, fill='white')
+        draw_text_with_outline(draw, completion_date_position, f"Date: {completion_date}", text_font)
 
         # Paste circular avatar onto background
         background.paste(avatar, AVATAR_POSITION, mask)
