@@ -21,6 +21,7 @@ load_dotenv()
 start_time = time.time()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+STEAMGRIDDB_API_KEY = os.getenv('STEAMGRIDDB_API_KEY')
 
 # Database setup
 conn = sqlite3.connect('hunters_ledger.db')
@@ -599,6 +600,10 @@ AVATAR_POSITION = (100, 50)  # Adjust as needed
 DISCORD_LOGO_SIZE = (200, 200)  # Size of Discord logo
 DISCORD_LOGO_POSITION = (800, 300)  # Bottom-right corner
 
+# Game Cover Image Settings
+COVER_SIZE = (300, 400)  # Adjust size to fit the design
+COVER_POSITION = (850, 50)  # Top-right placement
+
 
 def get_scaled_font(text, base_size, max_width, font_path, draw):
     """Scale font size dynamically if the text is too long."""
@@ -617,6 +622,42 @@ def get_scaled_font(text, base_size, max_width, font_path, draw):
 
     return font
 
+def fetch_steamgriddb_cover(game_name):
+    """Fetch a game cover (600x900) from SteamGridDB API."""
+    headers = {"Authorization": f"Bearer {STEAMGRIDDB_API_KEY}"}
+
+    # Step 1: Search for the game ID
+    search_url = f"https://www.steamgriddb.com/api/v2/search/autocomplete/{game_name}"
+    response = requests.get(search_url, headers=headers)
+
+    if response.status_code != 200 or not response.json().get("data"):
+        print(f"Game '{game_name}' not found on SteamGridDB.")
+        return None
+
+    game_id = response.json()["data"][0]["id"]
+
+    # Step 2: Fetch images, filtering for 600x900
+    image_url = f"https://www.steamgriddb.com/api/v2/grids/game/{game_id}?dimensions=600x900"
+    response = requests.get(image_url, headers=headers)
+
+    if response.status_code != 200 or not response.json().get("data"):
+        print(f"No 600x900 images found for '{game_name}'.")
+        return None
+
+    # Pick the first available image
+    cover_url = response.json()["data"][0]["url"]
+    return cover_url
+
+
+def download_image(url, save_path):
+    """Download an image from a given URL."""
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        with open(save_path, "wb") as file:
+            for chunk in response.iter_content(1024):
+                file.write(chunk)
+        return save_path
+    return None
 
 
 def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
@@ -656,6 +697,15 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         mask = Image.new("L", AVATAR_SIZE, 0)
         draw_mask = ImageDraw.Draw(mask)
         draw_mask.ellipse((0, 0, AVATAR_SIZE[0], AVATAR_SIZE[1]), fill=255)
+
+        # Fetch game cover from SteamGridDB
+        cover_url = fetch_steamgriddb_cover(game_name)
+        if cover_url:
+            cover_path = os.path.join(RESOURCE_PATH, f"{game_name}_cover.jpg")
+            cover_path = download_image(cover_url, cover_path)
+            game_cover = Image.open(cover_path).convert("RGBA").resize(COVER_SIZE, Image.LANCZOS)
+        else:
+            game_cover = None  # No cover found
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
