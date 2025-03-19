@@ -10,6 +10,9 @@ from datetime import timedelta
 from datetime import datetime
 from dotenv import load_dotenv
 import random
+from PIL import Image, ImageDraw, ImageFont
+import requests
+
 
 
 # Load environment variables
@@ -575,51 +578,62 @@ async def my_progress_graph(interaction: discord.Interaction):
     )
 
 # Test Image generate here
-import discord
-from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
-import os
 
-# Background image path (Replace with your custom themed background)
-BACKGROUND_IMAGE_PATH = "background.jpg"
 
-# Font Paths (Ensure these exist in your directory)
-import discord
-from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
-import os
-import requests
-from datetime import datetime
+# Resource Paths
+RESOURCE_PATH = "resources/"
+DEFAULT_BACKGROUND = "background.jpg"
+FONT_PATH = os.path.join(RESOURCE_PATH, "MedievalSharp.ttf")
+DISCORD_LOGO_PATH = os.path.join(RESOURCE_PATH, "discord_logo.png")
+
+# Font Sizes
+GAME_NAME_FONT_SIZE = 72  # Default, will scale dynamically
+TEXT_FONT_SIZE = 48  # Standard for other details
+FOOTER_FONT_SIZE = 30  # Smaller for credits
+
+# Profile Picture Settings
+AVATAR_SIZE = (100, 100)  # Size of profile picture
+AVATAR_POSITION = (100, 50)  # Adjust as needed
+
+# Discord Logo Settings
+DISCORD_LOGO_SIZE = (200, 200)  # Size of Discord logo
+DISCORD_LOGO_POSITION = (980, 500)  # Bottom-right corner
+
+
+def get_scaled_font(text, base_size, max_width, font_path):
+    """Scale font size dynamically if the text is too long."""
+    font_size = base_size
+    font = ImageFont.truetype(font_path, font_size)
+    
+    while font.getsize(text)[0] > max_width and font_size > 40:
+        font_size -= 2  # Reduce font size until it fits
+        font = ImageFont.truetype(font_path, font_size)
+
+    return font
+
 
 def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
     """Draws text with an outline for better readability."""
     x, y = position
     for dx in range(-outline_thickness, outline_thickness + 1):
         for dy in range(-outline_thickness, outline_thickness + 1):
-            if dx != 0 or dy != 0:  # Only draw offsets, avoid duplicating center text
+            if dx != 0 or dy != 0:
                 draw.text((x + dx, y + dy), text, font=font, fill=outline)
-    draw.text(position, text, font=font, fill=fill)  # Draw main text
-
-# Background image path
-BACKGROUND_IMAGE_PATH = "background.jpg"
-
-# Font Path
-FONT_PATH = "MedievalSharp.ttf"
-
-# Font Sizes
-GAME_NAME_FONT_SIZE = 72  # Larger for game title
-TEXT_FONT_SIZE = 48  # Standard for other details
-
-# Profile Picture Settings
-AVATAR_SIZE = (100, 100)  # Size of profile picture
+    draw.text(position, text, font=font, fill=fill)
 
 
-async def generate_completion_banner(game_name, user_name, completion_date, avatar_url):
+async def generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre=None):
     try:
+        # Choose background based on genre
+        background_path = os.path.join(RESOURCE_PATH, f"background_{genre.lower()}.jpg") if genre else os.path.join(RESOURCE_PATH, DEFAULT_BACKGROUND)
+        if not os.path.exists(background_path):
+            background_path = os.path.join(RESOURCE_PATH, DEFAULT_BACKGROUND)  # Fallback
+
         # Load images
-        background = Image.open(BACKGROUND_IMAGE_PATH).convert('RGBA')
-        xbox_logo = Image.open("xbox_logo.png").convert('RGBA')
-        calendar_icon = Image.open("calendar_icon.png").convert('RGBA')
+        background = Image.open(background_path).convert('RGBA')
+        xbox_logo = Image.open(os.path.join(RESOURCE_PATH, "xbox_logo.png")).convert('RGBA')
+        calendar_icon = Image.open(os.path.join(RESOURCE_PATH, "calendar_icon.png")).convert('RGBA')
+        discord_logo = Image.open(DISCORD_LOGO_PATH).convert("RGBA").resize(DISCORD_LOGO_SIZE, Image.LANCZOS)
 
         # Resize icons
         icon_size = (50, 50)
@@ -638,23 +652,22 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
-        game_font = ImageFont.truetype(FONT_PATH, GAME_NAME_FONT_SIZE)
         text_font = ImageFont.truetype(FONT_PATH, TEXT_FONT_SIZE)
+        footer_font = ImageFont.truetype(FONT_PATH, FOOTER_FONT_SIZE)
+
+        # Dynamic font for game name (scales if too long)
+        game_font = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 800, FONT_PATH)
 
         # Define positions (Aligned at the top-left)
-        AVATAR_POSITION = (100, 50)  # Adjust as needed
         game_name_position = (210, 50)
         xbox_logo_position = (125, 180)
-        user_name_position = (185, 175)  # Adjusted for alignment
+        user_name_position = (185, 175)
         calendar_icon_position = (125, 260)
         completion_date_position = (185, 255)
 
-        # Draw text
-        #draw.text(game_name_position, game_name, font=game_font, fill='white')
-        #background.paste(xbox_logo, xbox_logo_position, xbox_logo)
-        #draw.text(user_name_position, f"Completed by: {user_name}", font=text_font, fill='white')
-        #background.paste(calendar_icon, calendar_icon_position, calendar_icon)
-        #draw.text(completion_date_position, f"Date: {completion_date}", font=text_font, fill='white')
+        # Footer text
+        footer_position = (100, 640)  # Bottom-left
+        footer_text = "Generated by Hunter's Ledger, A Hunter's Haven bot"
 
         # Draw outlined text
         draw_text_with_outline(draw, game_name_position, game_name, game_font)
@@ -666,8 +679,14 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         # Paste circular avatar onto background
         background.paste(avatar, AVATAR_POSITION, mask)
 
+        # Draw footer text
+        draw_text_with_outline(draw, footer_position, footer_text, footer_font)
+
+        # Paste Discord logo
+        background.paste(discord_logo, DISCORD_LOGO_POSITION, discord_logo)
+
         # Save the image
-        output_path = f'completion_{user_name}.png'
+        output_path = os.path.join(RESOURCE_PATH, f'completion_{user_name}.png')
         background.save(output_path)
         return output_path
 
@@ -675,8 +694,9 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         print(f"Error generating banner: {e}")
         return None
 
+
 @bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
-async def generate_card(interaction: discord.Interaction, game_name: str):
+async def generate_card(interaction: discord.Interaction, game_name: str, genre: str = None):
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
     avatar_url = interaction.user.display_avatar.url  # Get user's profile picture URL
@@ -697,10 +717,9 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
         completion_date = completion_date_obj.strftime("%-d %b %Y")
 
         # Generate the banner
-        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url)
+        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
 
         if banner_path:
-            # Follow-up response since we deferred earlier
             await interaction.followup.send(
                 f"Here is your completion card, {interaction.user.mention}! 🎉",
                 file=discord.File(banner_path)
@@ -712,8 +731,6 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
             await interaction.followup.send("Error generating the completion card. Please try again later.")
     else:
         await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
-
-
 
 # Test image generate End
 
