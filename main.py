@@ -600,16 +600,23 @@ DISCORD_LOGO_SIZE = (200, 200)  # Size of Discord logo
 DISCORD_LOGO_POSITION = (980, 500)  # Bottom-right corner
 
 
-def get_scaled_font(text, base_size, max_width, font_path):
+def get_scaled_font(text, base_size, max_width, font_path, draw):
     """Scale font size dynamically if the text is too long."""
     font_size = base_size
     font = ImageFont.truetype(font_path, font_size)
-    
-    while font.getsize(text)[0] > max_width and font_size > 40:
-        font_size -= 2  # Reduce font size until it fits
+
+    while font_size > 40:
+        bbox = draw.textbbox((0, 0), text, font=font)  # Get text width
+        text_width = bbox[2] - bbox[0]  # Right - Left to get actual width
+
+        if text_width <= max_width:
+            break  # Font size fits, stop reducing
+
+        font_size -= 2  # Reduce font size
         font = ImageFont.truetype(font_path, font_size)
 
     return font
+
 
 
 def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
@@ -656,7 +663,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         footer_font = ImageFont.truetype(FONT_PATH, FOOTER_FONT_SIZE)
 
         # Dynamic font for game name (scales if too long)
-        game_font = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 800, FONT_PATH)
+        game_font = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 800, FONT_PATH, draw)
 
         # Define positions (Aligned at the top-left)
         game_name_position = (210, 50)
