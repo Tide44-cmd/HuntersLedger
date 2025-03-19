@@ -644,10 +644,10 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         # Define positions (Aligned at the top-left)
         AVATAR_POSITION = (100, 50)  # Adjust as needed
         game_name_position = (210, 50)
-        xbox_logo_position = (100, 180)
-        user_name_position = (160, 175)  # Adjusted for alignment
-        calendar_icon_position = (100, 260)
-        completion_date_position = (160, 255)
+        xbox_logo_position = (125, 180)
+        user_name_position = (185, 175)  # Adjusted for alignment
+        calendar_icon_position = (125, 260)
+        completion_date_position = (185, 255)
 
         # Draw text
         #draw.text(game_name_position, game_name, font=game_font, fill='white')
