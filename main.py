@@ -597,7 +597,7 @@ AVATAR_POSITION = (100, 50)  # Adjust as needed
 
 # Discord Logo Settings
 DISCORD_LOGO_SIZE = (200, 200)  # Size of Discord logo
-DISCORD_LOGO_POSITION = (850, 300)  # Bottom-right corner
+DISCORD_LOGO_POSITION = (800, 300)  # Bottom-right corner
 
 
 def get_scaled_font(text, base_size, max_width, font_path, draw):
