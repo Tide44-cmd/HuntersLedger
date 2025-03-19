@@ -622,6 +622,15 @@ def get_scaled_font(text, base_size, max_width, font_path, draw):
 
     return font
 
+def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
+    """Draws text with an outline for better readability."""
+    x, y = position
+    for dx in range(-outline_thickness, outline_thickness + 1):
+        for dy in range(-outline_thickness, outline_thickness + 1):
+            if dx != 0 or dy != 0:
+                draw.text((x + dx, y + dy), text, font=font, fill=outline)
+    draw.text(position, text, font=font, fill=fill)
+
 def fetch_steamgriddb_cover(game_name):
     """Fetch a game cover (600x900) from SteamGridDB API."""
     headers = {"Authorization": f"Bearer {STEAMGRIDDB_API_KEY}"}
