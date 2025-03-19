@@ -584,13 +584,28 @@ import os
 BACKGROUND_IMAGE_PATH = "background.jpg"
 
 # Font Paths (Ensure these exist in your directory)
+import discord
+from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
+import os
+import requests
+from datetime import datetime
+
+# Background image path
+BACKGROUND_IMAGE_PATH = "background.jpg"
+
+# Font Path
 FONT_PATH = "MedievalSharp.ttf"
 
 # Font Sizes
 GAME_NAME_FONT_SIZE = 72  # Larger for game title
 TEXT_FONT_SIZE = 48  # Standard for other details
 
-async def generate_completion_banner(game_name, user_name, completion_date):
+# Profile Picture Settings
+AVATAR_SIZE = (100, 100)  # Size of profile picture
+AVATAR_POSITION = (100, 300)  # Adjust as needed
+
+async def generate_completion_banner(game_name, user_name, completion_date, avatar_url):
     try:
         # Load images
         background = Image.open(BACKGROUND_IMAGE_PATH).convert('RGBA')
@@ -602,6 +617,16 @@ async def generate_completion_banner(game_name, user_name, completion_date):
         xbox_logo.thumbnail(icon_size)
         calendar_icon.thumbnail(icon_size)
 
+        # Fetch and process the user's avatar
+        response = requests.get(avatar_url, stream=True)
+        avatar = Image.open(response.raw).convert("RGBA")
+        avatar = avatar.resize(AVATAR_SIZE, Image.LANCZOS)
+
+        # Create a circular mask for the avatar
+        mask = Image.new("L", AVATAR_SIZE, 0)
+        draw_mask = ImageDraw.Draw(mask)
+        draw_mask.ellipse((0, 0, AVATAR_SIZE[0], AVATAR_SIZE[1]), fill=255)
+
         # Create drawing context
         draw = ImageDraw.Draw(background)
         game_font = ImageFont.truetype(FONT_PATH, GAME_NAME_FONT_SIZE)
@@ -610,9 +635,9 @@ async def generate_completion_banner(game_name, user_name, completion_date):
         # Define positions (Aligned at the top-left)
         game_name_position = (100, 50)
         xbox_logo_position = (100, 180)
-        user_name_position = (160, 175)
+        user_name_position = (160, 175)  # Adjusted for alignment
         calendar_icon_position = (100, 260)
-        completion_date_position = (160, 255)
+        completion_date_position = (160, 270)
 
         # Draw text
         draw.text(game_name_position, game_name, font=game_font, fill='white')
@@ -620,6 +645,9 @@ async def generate_completion_banner(game_name, user_name, completion_date):
         draw.text(user_name_position, f"Completed by: {user_name}", font=text_font, fill='white')
         background.paste(calendar_icon, calendar_icon_position, calendar_icon)
         draw.text(completion_date_position, f"Date: {completion_date}", font=text_font, fill='white')
+
+        # Paste circular avatar onto background
+        background.paste(avatar, AVATAR_POSITION, mask)
 
         # Save the image
         output_path = f'completion_{user_name}.png'
@@ -634,6 +662,7 @@ async def generate_completion_banner(game_name, user_name, completion_date):
 async def generate_card(interaction: discord.Interaction, game_name: str):
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
+    avatar_url = interaction.user.display_avatar.url  # Get user's profile picture URL
 
     # Defer response to prevent timeout
     await interaction.response.defer()
@@ -645,11 +674,13 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
 
     if result:
         completion_date_raw = result[0]
+
+        # Convert the date to "2 Feb 2025" format
         completion_date_obj = datetime.strptime(completion_date_raw, "%Y-%m-%d")
-        completion_date = completion_date_obj.strftime("%-d %b %Y")  # Formats as "2 Feb 2025"
+        completion_date = completion_date_obj.strftime("%-d %b %Y")
 
         # Generate the banner
-        banner_path = await generate_completion_banner(game_name, user_name, completion_date)
+        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url)
 
         if banner_path:
             # Follow-up response since we deferred earlier
@@ -664,6 +695,7 @@ async def generate_card(interaction: discord.Interaction, game_name: str):
             await interaction.followup.send("Error generating the completion card. Please try again later.")
     else:
         await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
+
 
 
 # Test image generate End
