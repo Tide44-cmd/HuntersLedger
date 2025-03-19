@@ -645,29 +645,19 @@ def fetch_steamgriddb_cover(game_name):
         return None
 
     # Pick the first available image
-    cover_url = response.json()["data"][0]["url"]
-    return cover_url
+    return response.json()["data"][0]["url"]
 
 
 def download_image(url, save_path):
     """Download an image from a given URL."""
-    response = requests.get(url, stream=True)
-    if response.status_code == 200:
-        with open(save_path, "wb") as file:
-            for chunk in response.iter_content(1024):
-                file.write(chunk)
-        return save_path
-    return None
-
-
-def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
-    """Draws text with an outline for better readability."""
-    x, y = position
-    for dx in range(-outline_thickness, outline_thickness + 1):
-        for dy in range(-outline_thickness, outline_thickness + 1):
-            if dx != 0 or dy != 0:
-                draw.text((x + dx, y + dy), text, font=font, fill=outline)
-    draw.text(position, text, font=font, fill=fill)
+    if url:
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            with open(save_path, "wb") as file:
+                for chunk in response.iter_content(1024):
+                    file.write(chunk)
+            return save_path
+    return None  # Return None if download fails
 
 
 async def generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre=None):
@@ -700,12 +690,14 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
 
         # Fetch game cover from SteamGridDB
         cover_url = fetch_steamgriddb_cover(game_name)
+        game_cover = None  # Default to None
+
         if cover_url:
             cover_path = os.path.join(RESOURCE_PATH, f"{game_name}_cover.jpg")
             cover_path = download_image(cover_url, cover_path)
-            game_cover = Image.open(cover_path).convert("RGBA").resize(COVER_SIZE, Image.LANCZOS)
-        else:
-            game_cover = None  # No cover found
+
+            if cover_path:
+                game_cover = Image.open(cover_path).convert("RGBA").resize(COVER_SIZE, Image.LANCZOS)
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
@@ -742,6 +734,10 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         # Paste Discord logo
         background.paste(discord_logo, DISCORD_LOGO_POSITION, discord_logo)
 
+        # Paste game cover (if available)
+        if game_cover:
+            background.paste(game_cover, COVER_POSITION, game_cover)
+
         # Save the image
         output_path = os.path.join(RESOURCE_PATH, f'completion_{user_name}.png')
         background.save(output_path)
@@ -751,43 +747,6 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         print(f"Error generating banner: {e}")
         return None
 
-
-@bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
-async def generate_card(interaction: discord.Interaction, game_name: str, genre: str = None):
-    user_id = str(interaction.user.id)
-    user_name = interaction.user.display_name
-    avatar_url = interaction.user.display_avatar.url  # Get user's profile picture URL
-
-    # Defer response to prevent timeout
-    await interaction.response.defer()
-
-    # Check if the game is completed
-    c.execute("SELECT completion_date FROM solo_backlogs WHERE user_id = ? AND game_name = ? AND status = 'completed'", 
-              (user_id, game_name))
-    result = c.fetchone()
-
-    if result:
-        completion_date_raw = result[0]
-
-        # Convert the date to "2 Feb 2025" format
-        completion_date_obj = datetime.strptime(completion_date_raw, "%Y-%m-%d")
-        completion_date = completion_date_obj.strftime("%-d %b %Y")
-
-        # Generate the banner
-        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
-
-        if banner_path:
-            await interaction.followup.send(
-                f"Here is your completion card, {interaction.user.mention}! 🎉",
-                file=discord.File(banner_path)
-            )
-
-            # Clean up the image after sending
-            os.remove(banner_path)
-        else:
-            await interaction.followup.send("Error generating the completion card. Please try again later.")
-    else:
-        await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
 
 # Test image generate End
 
