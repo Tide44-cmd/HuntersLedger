@@ -602,7 +602,7 @@ DISCORD_LOGO_POSITION = (800, 300)  # Bottom-right corner
 
 # Game Cover Image Settings
 COVER_SIZE = (300, 400)  # Adjust size to fit the design
-COVER_POSITION = (850, 50)  # Top-right placement
+COVER_POSITION = (200, 50)  # Top-right placement
 
 
 def get_scaled_font(text, base_size, max_width, font_path, draw):
