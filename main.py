@@ -748,6 +748,44 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         return None
 
 
+@bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
+async def generate_card(interaction: discord.Interaction, game_name: str, genre: str = None):
+    user_id = str(interaction.user.id)
+    user_name = interaction.user.display_name
+    avatar_url = interaction.user.display_avatar.url  # Get user's profile picture URL
+
+    # Defer response to prevent timeout
+    await interaction.response.defer()
+
+    # Check if the game is completed
+    c.execute("SELECT completion_date FROM solo_backlogs WHERE user_id = ? AND game_name = ? AND status = 'completed'", 
+              (user_id, game_name))
+    result = c.fetchone()
+
+    if result:
+        completion_date_raw = result[0]
+
+        # Convert the date to "2 Feb 2025" format
+        completion_date_obj = datetime.strptime(completion_date_raw, "%Y-%m-%d")
+        completion_date = completion_date_obj.strftime("%-d %b %Y")
+
+        # Generate the banner
+        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
+
+        if banner_path:
+            await interaction.followup.send(
+                f"Here is your completion card, {interaction.user.mention}! 🎉",
+                file=discord.File(banner_path)
+            )
+
+            # Clean up the image after sending
+            os.remove(banner_path)
+        else:
+            await interaction.followup.send("Error generating the completion card. Please try again later.")
+    else:
+        await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
+
+
 # Test image generate End
 
 
