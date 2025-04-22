@@ -738,7 +738,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         background.paste(avatar, AVATAR_POSITION, mask)
 
         # Draw footer text
-        draw_text_with_outline(draw, footer_position, footer_text, footer_font)
+        #draw_text_with_outline(draw, footer_position, footer_text, footer_font)
 
         # Paste Discord logo
         #background.paste(discord_logo, DISCORD_LOGO_POSITION, discord_logo)
