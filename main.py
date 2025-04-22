@@ -601,7 +601,7 @@ AVATAR_POSITION = (100, 150)  # Adjust as needed
 #DISCORD_LOGO_POSITION = (560, 465)  # Bottom-right corner
 
 # Game Cover Image Settings
-COVER_SIZE = (600, 900)  # Adjust size to fit the design
+COVER_SIZE = (345, 518)  # Adjust size to fit the design
 COVER_POSITION = (800, 150)  # Top-right placement
 
 
