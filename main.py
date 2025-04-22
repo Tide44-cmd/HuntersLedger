@@ -588,7 +588,7 @@ FONT_PATH = os.path.join(RESOURCE_PATH, "MedievalSharp.ttf")
 #DISCORD_LOGO_PATH = os.path.join(RESOURCE_PATH, "discord_logo.png")
 
 # Font Sizes
-GAME_NAME_FONT_SIZE = 72  # Default, will scale dynamically
+GAME_NAME_FONT_SIZE = 55  # Default, will scale dynamically
 TEXT_FONT_SIZE = 48  # Standard for other details
 FOOTER_FONT_SIZE = 30  # Smaller for credits
 
@@ -601,8 +601,8 @@ AVATAR_POSITION = (100, 150)  # Adjust as needed
 #DISCORD_LOGO_POSITION = (560, 465)  # Bottom-right corner
 
 # Game Cover Image Settings
-COVER_SIZE = (250, 375)  # Adjust size to fit the design
-COVER_POSITION = (700, 50)  # Top-right placement
+COVER_SIZE = (600, 900)  # Adjust size to fit the design
+COVER_POSITION = (800, 150)  # Top-right placement
 
 
 def get_scaled_font(text, base_size, max_width, font_path, draw):
@@ -717,11 +717,11 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         game_font = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 600, FONT_PATH, draw)
 
         # Define positions (Aligned at the top-left)
-        game_name_position = (215, 50)
-        xbox_logo_position = (125, 180)
-        user_name_position = (185, 175)
-        calendar_icon_position = (125, 260)
-        completion_date_position = (185, 255)
+        game_name_position = (215, 150)
+        xbox_logo_position = (125, 280)
+        user_name_position = (185, 275)
+        calendar_icon_position = (125, 360)
+        completion_date_position = (185, 355)
 
         # Footer text
         #footer_position = (815, 670)  # Bottom-left
