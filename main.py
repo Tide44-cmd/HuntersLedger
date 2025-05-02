@@ -588,7 +588,7 @@ FONT_PATH = os.path.join(RESOURCE_PATH, "MedievalSharp.ttf")
 #DISCORD_LOGO_PATH = os.path.join(RESOURCE_PATH, "discord_logo.png")
 
 # Font Sizes
-GAME_NAME_FONT_SIZE = 55  # Default, will scale dynamically
+GAME_NAME_FONT_SIZE = 72  # Default, will scale dynamically
 TEXT_FONT_SIZE = 48  # Standard for other details
 FOOTER_FONT_SIZE = 30  # Smaller for credits
 
@@ -602,7 +602,7 @@ AVATAR_POSITION = (100, 150)  # Adjust as needed
 
 # Game Cover Image Settings
 COVER_SIZE = (345, 518)  # Adjust size to fit the design
-COVER_POSITION = (800, 150)  # Top-right placement
+COVER_POSITION = (850, 125)  # Top-right placement
 
 
 def get_scaled_font(text, base_size, max_width, font_path, draw):
@@ -732,7 +732,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         background.paste(xbox_logo, xbox_logo_position, xbox_logo)
         draw_text_with_outline(draw, user_name_position, f"{user_name}", text_font)
         background.paste(calendar_icon, calendar_icon_position, calendar_icon)
-        draw_text_with_outline(draw, completion_date_position, f"Date: {completion_date}", text_font)
+        draw_text_with_outline(draw, completion_date_position, f"{completion_date}", text_font)
 
         # Paste circular avatar onto background
         background.paste(avatar, AVATAR_POSITION, mask)
