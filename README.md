@@ -20,32 +20,43 @@ Whether you're chasing 100% completion or just coordinating sessions with friend
 
 ---
 
-## Commands Overview:
+## 📜 Commands Overview
 
-### Game Management:
-- /trackhunt `"game name"` - Adds a game to the managed list.
-- /changehunt `"old name"` `"new name"` - Renames a game in the database.
-- ?forgethunt `"game name"` - Removes a game from the list (Admin only).
+### 🎮 Game Management
+- /trackhunt `"game name"` — Add a game to the managed list.
+- /changehunt `"old name"` `"new name"` — Rename a game in the database.
+- /forgethunt `"game name"` — Remove a game from the list *(Admin only)*.
 
-### Hunter Management:
-- /joinhunt `"game name"` - Add yourself to a game's hunter list.
-- /leavehunt `"game name"` - Remove yourself from a game's hunter list.
-- /showmyhunts - Displays all games you're signed up for.
-- /showhunter `@user` - Displays all games a specific user is hunting.
-- ?forgethunter `@user` - Remove a user from all games (Admin only).
+### 🧑‍🤝‍🧑 Hunter Management
+- /joinhunt `"game name"` — Add yourself to a game's hunter list.
+- /leavehunt `"game name"` — Remove yourself from a game's hunter list.
+- /showmyhunts — Show all games you’re currently signed up for.
+- /showhunter `@user` — View games another user is hunting.
 
-### Insights and Discovery:
-- /mosthunted - Displays the top 5 most popular games by player count.
-- /nothunted - Shows a list of games with no users signed up.
-- /showhunts - Displays all currently tracked games.
+### 🔍 Insights & Discovery
+- /mosthunted — Show the top 5 most popular games.
+- /nothunted — Show games with no users signed up.
+- `showhunts — Display all tracked games.
 
-### Collaboration and Call to Action:
-- /callhunters `"game name"` - Tags all users signed up for a specific game.
+### 📢 Collaboration & Callouts
+- /callhunters `"game name"` — Tag all users hunting a specific game.
+- /remindhunters `[message]` — Ping all hunters with a reminder.
 
-### Bot Information and Health:
-- /botversion - Displays the bot's version and additional information.
-- /help - Provides a list of all available commands.
-- /healthcheck - Checks the bot's status, including database connection and uptime.
+### 🎯 Solo Hunt Management
+- /newhunt `"game name"` — Add a game to your solo backlog.
+- /mysolohunts — View your solo backlog (not started / in progress).
+- /starthunt `"game name"` — Mark a solo game as in progress.
+- /finishhunt `"game name"` — Mark a solo game as completed.
+- /myfinishedhunts `[Month] [Year]` — View completed solo games.
+- /givemeahunt — Randomly pick a new solo hunt from your backlog.
+- /ratehunt `"game name" rating [comments]` — Rate and review a finished game.
+- /huntfeedback `"game name"` — View feedback from others.
+- /generatecard `"game name"` — Generate a completion banner for a finished game.
+
+### 🤖 Bot Information
+- /botversion — Display bot version and credits.
+- /help — Show a full list of available commands.
+- /healthcheck — Check database connection, uptime, and registered commands.
 
 ---
 
