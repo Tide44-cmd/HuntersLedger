@@ -36,7 +36,7 @@ Whether you're chasing 100% completion or just coordinating sessions with friend
 ### 🔍 Insights & Discovery
 - /mosthunted — Show the top 5 most popular games.
 - /nothunted — Show games with no users signed up.
-- `showhunts — Display all tracked games.
+- /showhunts — Display all tracked games.
 
 ### 📢 Collaboration & Callouts
 - /callhunters `"game name"` — Tag all users hunting a specific game.
