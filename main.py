@@ -686,8 +686,9 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
             if cover_path:
                 game_cover = Image.open(cover_path).convert("RGBA").resize(COVER_SIZE, Image.LANCZOS)
 
-        # Load comp_banner image
+        # Load and resize comp_banner image
         comp_banner = Image.open(os.path.join(RESOURCE_PATH, "completion_banner.png")).convert("RGBA")
+        comp_banner = comp_banner.resize((350, 200), Image.LANCZOS)
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
