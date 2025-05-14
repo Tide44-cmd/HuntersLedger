@@ -458,6 +458,7 @@ async def help_command(interaction: discord.Interaction):
   - `/givemeahunt` - Randomly select a hunt from your backlog and set it to "in progress."
   - `/ratehunt "game name" "rating out of 5" [comments]` - Rate a completed game and leave optional comments.
   - `/huntfeedback "game name"` - View feedback and ratings left by others for a specific game.
+  - `/generatecard "game name"` - Generate a completion card for a finished solo game.
 
 - **Bot Information:**
   - `/botversion` - Displays the bot's version and additional information.
