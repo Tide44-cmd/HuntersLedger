@@ -688,7 +688,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
 
         # Load and resize comp_banner image
         comp_banner = Image.open(os.path.join(RESOURCE_PATH, "completion_banner.png")).convert("RGBA")
-        comp_banner = comp_banner.resize((350, 200), Image.LANCZOS)
+        comp_banner = comp_banner.resize((600, 500), Image.LANCZOS)
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
@@ -705,7 +705,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
             "user_name": (185, 275),
             "calendar_icon": (125, 360),
             "completion_date": (185, 355),
-            "comp_banner": (125, 400),
+            "comp_banner": (125, 425),
         }
 
         # Draw elements
