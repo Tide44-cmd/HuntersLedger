@@ -698,7 +698,7 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
 
         # Define element positions
         positions = {
-            "game_name": (215, 150 - actual_font_size // 2),  # Vertical adjustment for centering
+            "game_name": (215, 150 + actual_font_size // 2),  # Vertical adjustment for centering
             "xbox_logo": (125, 280),
             "user_name": (185, 275),
             "calendar_icon": (125, 360),
