@@ -14,7 +14,6 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 
 
-
 # Load environment variables
 load_dotenv()
 # Track the bot's start time
@@ -579,63 +578,54 @@ async def my_progress_graph(interaction: discord.Interaction):
     )
 
 # Test Image generate here
+# ==== Imports ====
 
 
-# Resource Paths
+# ==== Resource Paths ====
 RESOURCE_PATH = "resources/"
 DEFAULT_BACKGROUND = "background.jpg"
 FONT_PATH = os.path.join(RESOURCE_PATH, "MedievalSharp.ttf")
-#DISCORD_LOGO_PATH = os.path.join(RESOURCE_PATH, "discord_logo.png")
 
-# Font Sizes
-GAME_NAME_FONT_SIZE = 72  # Default, will scale dynamically
-TEXT_FONT_SIZE = 48  # Standard for other details
-FOOTER_FONT_SIZE = 30  # Smaller for credits
+# ==== Font Sizes ====
+GAME_NAME_FONT_SIZE = 72
+TEXT_FONT_SIZE = 48
+FOOTER_FONT_SIZE = 30
 
-# Profile Picture Settings
-AVATAR_SIZE = (100, 100)  # Size of profile picture
-AVATAR_POSITION = (100, 150)  # Adjust as needed
+# ==== Avatar Settings ====
+AVATAR_SIZE = (100, 100)
+AVATAR_POSITION = (100, 150)
 
-# Discord Logo Settings
-#DISCORD_LOGO_SIZE = (200, 200)  # Size of Discord logo
-#DISCORD_LOGO_POSITION = (560, 465)  # Bottom-right corner
+# ==== Game Cover Settings ====
+COVER_SIZE = (345, 518)
+COVER_POSITION = (850, 110)
 
-# Game Cover Image Settings
-COVER_SIZE = (345, 518)  # Adjust size to fit the design
-COVER_POSITION = (850, 125)  # Top-right placement
-
-
-def get_scaled_font(text, base_size, max_width, font_path, draw):
-    """Scale font size dynamically if the text is too long."""
+# ==== Utilities ====
+def get_scaled_font(text, base_size, max_width, font_path, draw_context):
+    """Returns a font that fits within max_width and the final font size."""
     font_size = base_size
     font = ImageFont.truetype(font_path, font_size)
-
     while font_size > 40:
-        bbox = draw.textbbox((0, 0), text, font=font)  # Get text width
-        text_width = bbox[2] - bbox[0]  # Right - Left to get actual width
-
+        bbox = draw_context.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
         if text_width <= max_width:
-            break  # Font size fits, stop reducing
-
-        font_size -= 2  # Reduce font size
+            break
+        font_size -= 2
         font = ImageFont.truetype(font_path, font_size)
+    return font, font_size
 
-    return font
 
 def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", outline_thickness=3):
-    """Draws text with an outline for better readability."""
+    """Draw text with an outline for visibility."""
     x, y = position
     for dx in range(-outline_thickness, outline_thickness + 1):
         for dy in range(-outline_thickness, outline_thickness + 1):
-            if dx != 0 or dy != 0:
+            if dx or dy:
                 draw.text((x + dx, y + dy), text, font=font, fill=outline)
     draw.text(position, text, font=font, fill=fill)
 
 def fetch_steamgriddb_cover(game_name):
-    """Fetch a game cover (600x900) from SteamGridDB API."""
+    """Fetch a 600x900 game cover from SteamGridDB."""
     headers = {"Authorization": f"Bearer {STEAMGRIDDB_API_KEY}"}
-
-    # Step 1: Search for the game ID
     search_url = f"https://www.steamgriddb.com/api/v2/search/autocomplete/{game_name}"
     response = requests.get(search_url, headers=headers)
 
@@ -644,8 +634,6 @@ def fetch_steamgriddb_cover(game_name):
         return None
 
     game_id = response.json()["data"][0]["id"]
-
-    # Step 2: Fetch images, filtering for 600x900
     image_url = f"https://www.steamgriddb.com/api/v2/grids/game/{game_id}?dimensions=600x900"
     response = requests.get(image_url, headers=headers)
 
@@ -653,12 +641,10 @@ def fetch_steamgriddb_cover(game_name):
         print(f"No 600x900 images found for '{game_name}'.")
         return None
 
-    # Pick the first available image
     return response.json()["data"][0]["url"]
 
-
 def download_image(url, save_path):
-    """Download an image from a given URL."""
+    """Download an image from a URL to a local file."""
     if url:
         response = requests.get(url, stream=True)
         if response.status_code == 200:
@@ -666,88 +652,73 @@ def download_image(url, save_path):
                 for chunk in response.iter_content(1024):
                     file.write(chunk)
             return save_path
-    return None  # Return None if download fails
+    return None
 
-
+# ==== Banner Generation ====
 async def generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre=None):
     try:
-        # Choose background based on genre
-        background_path = os.path.join(RESOURCE_PATH, f"background_{genre.lower()}.jpg") if genre else os.path.join(RESOURCE_PATH, DEFAULT_BACKGROUND)
+        # Background image
+        background_file = f"background_{genre.lower()}.jpg" if genre else DEFAULT_BACKGROUND
+        background_path = os.path.join(RESOURCE_PATH, background_file)
         if not os.path.exists(background_path):
-            background_path = os.path.join(RESOURCE_PATH, DEFAULT_BACKGROUND)  # Fallback
+            background_path = os.path.join(RESOURCE_PATH, DEFAULT_BACKGROUND)
 
-        # Load images
         background = Image.open(background_path).convert('RGBA')
+
+        # Icons
         xbox_logo = Image.open(os.path.join(RESOURCE_PATH, "xbox_logo.png")).convert('RGBA')
         calendar_icon = Image.open(os.path.join(RESOURCE_PATH, "calendar_icon.png")).convert('RGBA')
-        #discord_logo = Image.open(DISCORD_LOGO_PATH).convert("RGBA").resize(DISCORD_LOGO_SIZE, Image.LANCZOS)
+        for icon in [xbox_logo, calendar_icon]:
+            icon.thumbnail((50, 50))
 
-        # Resize icons
-        icon_size = (50, 50)
-        xbox_logo.thumbnail(icon_size)
-        calendar_icon.thumbnail(icon_size)
-
-        # Fetch and process the user's avatar
+        # Avatar processing
         response = requests.get(avatar_url, stream=True)
-        avatar = Image.open(response.raw).convert("RGBA")
-        avatar = avatar.resize(AVATAR_SIZE, Image.LANCZOS)
-
-        # Create a circular mask for the avatar
+        avatar = Image.open(response.raw).convert("RGBA").resize(AVATAR_SIZE, Image.LANCZOS)
         mask = Image.new("L", AVATAR_SIZE, 0)
-        draw_mask = ImageDraw.Draw(mask)
-        draw_mask.ellipse((0, 0, AVATAR_SIZE[0], AVATAR_SIZE[1]), fill=255)
+        ImageDraw.Draw(mask).ellipse((0, 0, *AVATAR_SIZE), fill=255)
 
-        # Fetch game cover from SteamGridDB
+        # Game cover
+        game_cover = None
         cover_url = fetch_steamgriddb_cover(game_name)
-        game_cover = None  # Default to None
-
         if cover_url:
-            cover_path = os.path.join(RESOURCE_PATH, f"{game_name}_cover.jpg")
-            cover_path = download_image(cover_url, cover_path)
-
+            cover_path = download_image(cover_url, os.path.join(RESOURCE_PATH, f"{game_name}_cover.jpg"))
             if cover_path:
                 game_cover = Image.open(cover_path).convert("RGBA").resize(COVER_SIZE, Image.LANCZOS)
+
+        # Load comp_banner image
+        comp_banner = Image.open(os.path.join(RESOURCE_PATH, "completion_banner.png")).convert("RGBA")
 
         # Create drawing context
         draw = ImageDraw.Draw(background)
         text_font = ImageFont.truetype(FONT_PATH, TEXT_FONT_SIZE)
         footer_font = ImageFont.truetype(FONT_PATH, FOOTER_FONT_SIZE)
 
-        # Dynamic font for game name (scales if too long)
-        game_font = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 600, FONT_PATH, draw)
+        # Get scaled game name font and its actual size
+        game_font, actual_font_size = get_scaled_font(game_name, GAME_NAME_FONT_SIZE, 550, FONT_PATH, draw)
 
-        # Define positions (Aligned at the top-left)
-        game_name_position = (215, 150)
-        xbox_logo_position = (125, 280)
-        user_name_position = (185, 275)
-        calendar_icon_position = (125, 360)
-        completion_date_position = (185, 355)
+        # Define element positions
+        positions = {
+            "game_name": (215, 150 - actual_font_size // 2),  # Vertical adjustment for centering
+            "xbox_logo": (125, 280),
+            "user_name": (185, 275),
+            "calendar_icon": (125, 360),
+            "completion_date": (185, 355),
+            "comp_banner": (125, 400),
+        }
 
-        # Footer text
-        #footer_position = (815, 670)  # Bottom-left
-        #footer_text = "Generated by Hunter's Ledger"
-
-        # Draw outlined text
-        draw_text_with_outline(draw, game_name_position, game_name, game_font)
-        background.paste(xbox_logo, xbox_logo_position, xbox_logo)
-        draw_text_with_outline(draw, user_name_position, f"{user_name}", text_font)
-        background.paste(calendar_icon, calendar_icon_position, calendar_icon)
-        draw_text_with_outline(draw, completion_date_position, f"{completion_date}", text_font)
-
-        # Paste circular avatar onto background
+        # Draw elements
+        draw_text_with_outline(draw, positions["game_name"], game_name, game_font)
+        background.paste(xbox_logo, positions["xbox_logo"], xbox_logo)
+        draw_text_with_outline(draw, positions["user_name"], user_name, text_font)
+        background.paste(calendar_icon, positions["calendar_icon"], calendar_icon)
+        draw_text_with_outline(draw, positions["completion_date"], completion_date, text_font)
+        background.paste(comp_banner, positions["comp_banner"], comp_banner)
         background.paste(avatar, AVATAR_POSITION, mask)
 
-        # Draw footer text
-        #draw_text_with_outline(draw, footer_position, footer_text, footer_font)
-
-        # Paste Discord logo
-        #background.paste(discord_logo, DISCORD_LOGO_POSITION, discord_logo)
-
-        # Paste game cover (if available)
+        # Paste game cover if available
         if game_cover:
             background.paste(game_cover, COVER_POSITION, game_cover)
 
-        # Save the image
         output_path = os.path.join(RESOURCE_PATH, f'completion_{user_name}.png')
         background.save(output_path)
         return output_path
@@ -756,43 +727,37 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
         print(f"Error generating banner: {e}")
         return None
 
-
+# ==== Discord Slash Command ====
 @bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
 async def generate_card(interaction: discord.Interaction, game_name: str, genre: str = None):
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
-    avatar_url = interaction.user.display_avatar.url  # Get user's profile picture URL
+    avatar_url = interaction.user.display_avatar.url
 
-    # Defer response to prevent timeout
     await interaction.response.defer()
 
-    # Check if the game is completed
-    c.execute("SELECT completion_date FROM solo_backlogs WHERE user_id = ? AND game_name = ? AND status = 'completed'", 
-              (user_id, game_name))
+    c.execute("""
+        SELECT completion_date 
+        FROM solo_backlogs 
+        WHERE user_id = ? AND game_name = ? AND status = 'completed'
+    """, (user_id, game_name))
+    
     result = c.fetchone()
-
-    if result:
-        completion_date_raw = result[0]
-
-        # Convert the date to "2 Feb 2025" format
-        completion_date_obj = datetime.strptime(completion_date_raw, "%Y-%m-%d")
-        completion_date = completion_date_obj.strftime("%-d %b %Y")
-
-        # Generate the banner
-        banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
-
-        if banner_path:
-            await interaction.followup.send(
-                f"Here is your completion card, {interaction.user.mention}! 🎉",
-                file=discord.File(banner_path)
-            )
-
-            # Clean up the image after sending
-            os.remove(banner_path)
-        else:
-            await interaction.followup.send("Error generating the completion card. Please try again later.")
-    else:
+    if not result:
         await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
+        return
+
+    completion_date = datetime.strptime(result[0], "%Y-%m-%d").strftime("%-d %b %Y")
+    banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
+
+    if banner_path:
+        await interaction.followup.send(
+            f"Here is your completion card, {interaction.user.mention}! 🎉",
+            file=discord.File(banner_path)
+        )
+        os.remove(banner_path)
+    else:
+        await interaction.followup.send("Error generating the completion card. Please try again later.")
 
 
 # Test image generate End
