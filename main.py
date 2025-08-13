@@ -196,14 +196,14 @@ async def send_safely(
   
 # ---- Mass add modal for solo backlog ----
 class MassHuntsModal(discord.ui.Modal, title="Mass add solo hunts"):
-    instructions = discord.ui.TextInput(
-      label="How to use",
-      style=discord.TextStyle.short,
-      default="Add items separated by commas (,).",
-      required=False,
-      min_length=len("Add items separated by commas (,)."),
-      max_length=len("Add items separated by commas (,)."),
-    )
+   # instructions = discord.ui.TextInput(
+   #   label="How to use",
+   #   style=discord.TextStyle.short,
+   #   default="Add items separated by commas (,).",
+   #   required=False,
+   #   min_length=len("Add items separated by commas (,)."),
+   #   max_length=len("Add items separated by commas (,)."),
+   # )
     not_started = discord.ui.TextInput(
         label='Not started',
         style=discord.TextStyle.paragraph,
