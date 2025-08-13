@@ -4,6 +4,7 @@ from discord import Interaction
 from discord import ButtonStyle
 from discord.ui import Button, View
 from discord import app_commands
+from discord import Embed, Color, app_commands
 import sqlite3
 import os
 import time
@@ -198,13 +199,13 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
         label='Not started',
         style=discord.TextStyle.paragraph,
         required=False,
-        placeholder='e.g., Hollow Knight, Ori and the Blind Forest  — or one per line'
+        placeholder='e.g., Hollow Knight, Ori and the Blind Forest — or one per line'
     )
     in_progress = discord.ui.TextInput(
         label='In progress',
         style=discord.TextStyle.paragraph,
         required=False,
-        placeholder='e.g., Elden Ring, Hades  — or one per line'
+        placeholder='e.g., Elden Ring, Hades — or one per line'
     )
 
     def __init__(self, user_id: int, user_name: str):
@@ -216,21 +217,20 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
         def parse_list(raw: str) -> list[str]:
             if not raw:
                 return []
-            # Split on commas, strip whitespace, drop empties
-            return [g.strip() for g in raw.split(",") if g.strip()]
+            # NEW: split on commas OR new lines (and semicolons), trim, drop empties
+            parts = re.split(r"[,;\n]+", str(raw))
+            return [p.strip() for p in parts if p.strip()]
 
         def norm(s: str) -> str:
-            # Normalize for case/spacing comparisons
             return " ".join(s.split()).lower()
 
         ns_raw = parse_list(str(self.not_started.value))
         ip_raw = parse_list(str(self.in_progress.value))
 
-        # Deduplicate within each list while keeping last-typed casing
+        # ---- everything below unchanged ----
         ns_map = {norm(g): g for g in ns_raw}
         ip_map = {norm(g): g for g in ip_raw}
 
-        # Conflict resolution: if a game is in both lists, "In progress" wins
         for key in set(ns_map.keys()) & set(ip_map.keys()):
             ns_map.pop(key, None)
 
@@ -239,7 +239,6 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
         unchanged = []
 
         def upsert(game_display: str, target_status: str, added_list: list[str], moved_list: list[str]):
-            # Does this title already exist for the user?
             c.execute(
                 'SELECT game_name, status FROM solo_backlogs WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
                 (self._user_id, game_display)
@@ -247,7 +246,6 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
             row = c.fetchone()
 
             if not row:
-                # Insert new (use the casing the user typed)
                 c.execute(
                     'INSERT INTO solo_backlogs (user_id, user_name, game_name, status) VALUES (?, ?, ?, ?)',
                     (self._user_id, self._user_name, game_display, target_status)
@@ -257,7 +255,6 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
 
             existing_name, existing_status = row
             if existing_status != target_status:
-                # Move status (keep existing casing; don't overwrite user's canonical title)
                 c.execute(
                     'UPDATE solo_backlogs SET status = ?, user_name = ? WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
                     (target_status, self._user_name, self._user_id, game_display)
@@ -266,7 +263,6 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
             else:
                 unchanged.append(existing_name)
 
-        # Apply Not started first, then In progress (IP wins in conflicts handled above)
         for g in ns_map.values():
             upsert(g, "not started", added_ns, moved_to_ns)
         for g in ip_map.values():
@@ -274,7 +270,6 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
 
         conn.commit()
 
-        # Build a tidy summary
         segments = []
         if added_ip:
             segments.append("**In Progress – added:** " + ", ".join(added_ip))
@@ -737,53 +732,58 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
 @bot.tree.command(name="help", description="Show help for Haven's Ledger")
 async def help_cmd(interaction: discord.Interaction):
     e = Embed(title="Haven's Ledger — Help", color=Color.gold())
-    e.description = "Find co-op buddies, manage your multiplayer hunts, and track your solo backlog."
+    e.description = "Find co-op buddies, manage multiplayer hunts, and track your solo backlog."
 
     # Co-op & Multiplayer
-    coop = []
-    coop.append("`/trackhunt <game>` — Add a game to the co-op backlog **and auto-add yourself** if it’s new.")
-    coop.append("`/showhunts` — Show all games currently being managed.")
-    coop.append("`/whohunts <game>` — See who’s hunting a game (includes a **Join** button).")
-    coop.append("`/joinhunt <game>` — Join a game’s hunters.")
-    coop.append("`/leavehunt <game>` — Leave that game’s hunters.")
-    coop.append("`/showmyhunts` — List the games you’ve joined.")
-    coop.append("`/showhunter @user` — List the games another user has joined.")
-    coop.append("`/mosthunted` — Top 5 most popular games.")
-    coop.append("`/nothunted` — Games with no hunters yet.")
-    coop.append("`/changehunt <old> <new>` — Rename a tracked game.")
-    coop.append("`/callhunters <game> [message]` — Ping all hunters **with an optional message**.")
-    e.add_field(name="Co-op & Multiplayer", value="\n".join(coop), inline=False)
+    e.add_field(
+        name="Co-op & Multiplayer",
+        value="\n".join([
+            "`/trackhunt <game>` — Add a game to the co-op backlog **and auto-add yourself** if it’s new.",
+            "`/showhunts` — Show all games currently being managed.",
+            "`/whohunts <game>` — See who’s hunting a game (**Join** button included).",
+            "`/joinhunt <game>` — Join a game’s hunters.",
+            "`/leavehunt <game>` — Leave that game’s hunters.",
+            "`/showmyhunts` — List the games you’ve joined.",
+            "`/showhunter @user` — List the games another user has joined.",
+            "`/mosthunted` — Top 5 most popular games.",
+            "`/nothunted` — Games with no hunters yet.",
+            "`/changehunt <old> <new>` — Rename a tracked game.",
+            "`/callhunters <game> [message]` — Ping all hunters **with an optional message**.",
+        ]),
+        inline=False
+    )
 
     # Solo Backlog
-    solo = []
-    solo.append("`/newhunt <game>` — Add to your solo backlog as **not started**.")
-    solo.append("`/mysolohunts` — View your solo backlog (not started / in progress).")
-    solo.append("`/starthunt <game>` — Set status to **in progress**.")
-    solo.append("`/finishhunt <game>` — Set status to **completed**.")
-    solo.append("`/myfinishedhunts [Month] [Year]` — View completed games (all-time or a specific month/year).")
-    solo.append("`/givemeahunt` — Randomly pick a hunt and set it to **in progress**.")
-    solo.append("`/ratehunt <game> <1-5> [comments]` — Rate a completed game.")
-    solo.append("`/huntfeedback <game>` — See feedback / ratings for a game.")
-    solo.append("`/generatecard <game>` — Generate a completion card.")
-    solo.append("`/newmasshunts` — **Modal** to add/move multiple games at once (comma **or newline** separated).")
-    e.add_field(name="Solo Backlog", value="\n".join(solo), inline=False)
+    e.add_field(
+        name="Solo Backlog",
+        value="\n".join([
+            "`/newhunt <game>` — Add to your solo backlog as **not started**.",
+            "`/mysolohunts` — View your solo backlog (not started / in progress).",
+            "`/starthunt <game>` — Set status to **in progress**.",
+            "`/finishhunt <game>` — Set status to **completed**.",
+            "`/myfinishedhunts [Month] [Year]` — View completed games (all-time or a specific month/year).",
+            "`/givemeahunt` — Randomly pick a hunt and set it to **in progress**.",
+            "`/ratehunt <game> <1-5> [comments]` — Rate a completed game.",
+            "`/huntfeedback <game>` — See feedback & ratings for a game.",
+            "`/generatecard <game>` — Generate a completion card.",
+            "`/newmasshunts` — Modal to add/move multiple games at once (accepts **commas or new lines**).",
+        ]),
+        inline=False
+    )
 
-    # QoL / Safety
-    qol = []
-    qol.append("**Autocomplete**: available on `/whohunts`, `/joinhunt`, `/leavehunt`, `/forgethunt`, `/trackhunt`, `/callhunters`.")
-    qol.append("**Case-insensitive**: game lookups ignore capitalization.")
-    qol.append("**Join button**: shown on `/whohunts` for one-click joining.")
-    qol.append("**Safer `/forgethunt`**: asks for confirmation if others are still hunting the game.")
-    e.add_field(name="Quality of Life", value="\n".join(qol), inline=False)
 
     # Bot info
-    info = []
-    info.append("`/botversion` — Bot version & info.")
-    info.append("`/healthcheck` — Bot status/health.")
-    e.add_field(name="Bot Information", value="\n".join(info), inline=False)
+    e.add_field(
+        name="Bot Information",
+        value="\n".join([
+            "`/botversion` — Bot version & info.",
+            "`/healthcheck` — Bot status/health.",
+        ]),
+        inline=False
+    )
 
-    e.set_footer(text="Tip: Start typing a game name and pick from autocomplete. Be kind with pings.")
-    await interaction.response.send_message(embed=e, ephemeral=True)
+    e.set_footer(text="Tip: start typing a game and use autocomplete. Be kind with pings.")
+    await interaction.response.send_message(embed=e, ephemeral=False)
   
 # Command: Check who added a specific game (Admin only).
 @bot.tree.command(name="whoadded", description="Check who added a specific game (Admin only).")
@@ -890,7 +890,7 @@ async def call_hunters(interaction: Interaction, game_name: str, message: str | 
 # Command: Show bot version and information
 @bot.tree.command(name="botversion", description="Show bot version and additional information")
 async def bot_version(interaction: Interaction):
-    version_info = "**A Hunters Ledger v2.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/HuntersLedger)"
+    version_info = "**A Hunters Ledger v3.0**\nCreated by Tide44\nGitHub: [A Hunters Ledger](https://github.com/Tide44-cmd/HuntersLedger)"
     await interaction.response.send_message(version_info)
 
 # Command: Healthcheck
