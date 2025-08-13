@@ -192,6 +192,27 @@ async def send_safely(
         else:
             await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
 
+async def _send_long(interaction: discord.Interaction, header: str, lines: list[str]):
+    if not lines:
+        await interaction.response.send_message(header)
+        return
+    message_limit = 1900
+    current = header + "\n"
+    first = True
+    for line in lines:
+        if len(current) + len(line) + 1 > message_limit:
+            if first:
+                await interaction.response.send_message(current.rstrip())
+                first = False
+            else:
+                await interaction.followup.send(current.rstrip())
+            current = ""
+        current += line + "\n"
+    if current:
+        if first:
+            await interaction.response.send_message(current.rstrip())
+        else:
+            await interaction.followup.send(current.rstrip())
 
   
 # ---- Mass add modal for solo backlog ----
@@ -621,27 +642,48 @@ async def new_hunt(interaction: discord.Interaction, game_name: str):
     await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
 
 
-# Command: /mysolohunts - Display your solo backlog with statuses ('not started' or 'in progress')
-@bot.tree.command(name="mysolohunts", description="Display your solo backlog with statuses ('not started' or 'in progress').")
+# Command: /mysolohunts — paginated via _send_long
+@bot.tree.command(
+    name="mysolohunts",
+    description="Display your solo backlog with statuses ('not started' or 'in progress')."
+)
 async def my_solo_hunts(interaction: discord.Interaction):
-    c.execute('SELECT game_name, status FROM solo_backlogs WHERE user_id = ? ORDER BY status DESC, game_name ASC', (interaction.user.id,))
-    games = c.fetchall()
-    
-    if games:
-        # Separate games by status
-        in_progress = [game[0] for game in games if game[1] == "in progress"]
-        not_started = [game[0] for game in games if game[1] == "not started"]
-        
-        # Build response
-        response = ""
+    # Only show the two active statuses; order: in progress first, then not started; then A–Z
+    c.execute(
+        '''
+        SELECT game_name, status
+        FROM solo_backlogs
+        WHERE user_id = ? AND status IN ("in progress", "not started")
+        ORDER BY CASE status WHEN "in progress" THEN 1 WHEN "not started" THEN 2 ELSE 3 END,
+                 game_name COLLATE NOCASE ASC
+        ''',
+        (interaction.user.id,)
+    )
+    rows = c.fetchall()
+
+    if not rows:
+        # Let the helper handle the first send
+        await _send_long(interaction, "Your solo backlog is empty.", [])
+        return
+
+    in_progress = [name for (name, status) in rows if status == "in progress"]
+    not_started = [name for (name, status) in rows if status == "not started"]
+
+    total = len(in_progress) + len(not_started)
+    header = f"**Your solo hunts** — In Progress: {len(in_progress)} • Not Started: {len(not_started)} • Total: {total}"
+
+    # Build line list for _send_long (it will chunk across multiple messages)
+    lines: list[str] = []
+    if in_progress:
+        lines.append("**In Progress:**")
+        lines.extend(in_progress)
+    if not_started:
         if in_progress:
-            response += "**In Progress:**\n" + "\n".join(in_progress) + "\n\n"
-        if not_started:
-            response += "**Not Started:**\n" + "\n".join(not_started)
-        
-        await interaction.response.send_message(f"Your solo hunts:\n{response}")
-    else:
-        await interaction.response.send_message("Your solo backlog is empty.")
+            lines.append("")  # blank line between sections
+        lines.append("**Not Started:**")
+        lines.extend(not_started)
+
+    await _send_long(interaction, header, lines)
 
 
 # Command: /starthunt
