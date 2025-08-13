@@ -178,12 +178,18 @@ async def send_safely(
     ephemeral: bool = False,
     view: discord.ui.View | None = None
 ):
-    # If we already acknowledged this interaction (or used defer),
-    # send via followup to avoid InteractionResponded.
+    # Use followup if we've already acknowledged (or deferred) the interaction
     if interaction.response.is_done():
-        await interaction.followup.send(content, ephemeral=ephemeral, view=view)
+        if view is None:
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.followup.send(content, ephemeral=ephemeral, view=view)
     else:
-        await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
+        if view is None:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
+
 
   
 # ---- Mass add modal for solo backlog ----
