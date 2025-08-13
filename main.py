@@ -171,6 +171,19 @@ class JoinHuntView(discord.ui.View):
             ephemeral=True
         )
 
+async def send_safely(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    ephemeral: bool = False,
+    view: discord.ui.View | None = None
+):
+    # If we already acknowledged this interaction (or used defer),
+    # send via followup to avoid InteractionResponded.
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=ephemeral, view=view)
+    else:
+        await interaction.response.send_message(content, ephemeral=ephemeral, view=view)
 
   
 # ---- Mass add modal for solo backlog ----
@@ -765,7 +778,63 @@ async def who_added(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"No records found for the game '{game_name}'.")
 
 # Command: Call all hunters for a specific game
-@bot.tree.command(name="callhunters", description="Tag all users signed up to a specific game with an optional message")
+@bot.tree.command(name="callhunters", description="Tag all users signed up to a specific game, with an optional message")
+@app_commands.describe(
+    game_name="Start typing to search…",
+    message="Optional message to include"
+)
+async def call_hunters(
+    interaction: discord.Interaction,
+    game_name: str,
+    message: str | None = None
+):
+    # Case-insensitive game lookup
+    c.execute('SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)', (game_name,))
+    game = c.fetchone()
+    if not game:
+        await send_safely(interaction, f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+
+    # Fetch hunters
+    c.execute('SELECT user_id FROM user_games WHERE game_id = ?', (game_id,))
+    rows = c.fetchall()
+    if not rows:
+        await send_safely(interaction, f"No hunters are signed up for '{canonical_name}'.", ephemeral=True)
+        return
+
+    user_ids = [str(r[0]) for r in rows]
+
+    # Build message parts
+    note = (message or "").strip()
+    extra = f"\n\n{interaction.user.mention} says\n> {note}" if note else ""
+    header = f"Calling all hunters for '{canonical_name}':"
+
+    # Send in safe chunks (Discord limits; keep it conservative)
+    def chunks(seq, n):
+        for i in range(0, len(seq), n):
+            yield seq[i:i + n]
+
+    first = True
+    for group in chunks(user_ids, 40):  # 40 mentions per message is a safe cap
+        mentions = " ".join(f"<@{uid}>" for uid in group)
+        content = f"{header}\n{mentions}{extra}" if first else mentions
+        await send_safely(interaction, content)
+        first = False
+
+# ---- Autocomplete for game_name ----
+@call_hunters.autocomplete('game_name')
+async def call_hunters_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
 async def call_hunters(interaction: Interaction, game_name: str, message: str | None = None):
     # Case-insensitive game lookup
     c.execute('SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)', (game_name,))
