@@ -613,7 +613,7 @@ async def finish_hunt(interaction: discord.Interaction, game_name: str):
 
 
 # Command: /newmasshunts
-@bot.tree.command(name="v", description="Add multiple games to your solo backlog via a modal.")
+@bot.tree.command(name="newmasshunts", description="Add multiple games to your solo backlog via a modal.")
 async def new_mass_hunts(interaction: discord.Interaction):
     await interaction.response.send_modal(MassHuntsModal(interaction.user.id, interaction.user.name))
 
