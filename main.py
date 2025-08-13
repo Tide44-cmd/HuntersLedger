@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import Interaction
 from discord import ButtonStyle
 from discord.ui import Button, View
+from discord import app_commands
 import sqlite3
 import os
 import time
@@ -74,15 +75,29 @@ async def on_ready():
 # Command: Track a game with platform in the game title
 @bot.tree.command(name="trackhunt", description="Add a game to the list")
 async def track_hunt(interaction: discord.Interaction, game_name: str):
-    # Check if the game is already in the database
-    c.execute("SELECT * FROM games WHERE game_name = ?", (game_name,))
-    if c.fetchone():
-        await interaction.response.send_message(f"The game '{game_name}' is already being tracked.")
-    else:
-        # Insert the game into the database
-        c.execute("INSERT INTO games (game_name) VALUES (?)", (game_name,))
-        conn.commit()
-        await interaction.response.send_message(f"Game '{game_name}' has been added to the list.")
+    # Case-insensitive existence check to prevent A/a duplicates
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
+    row = c.fetchone()
+
+    if row:
+        await interaction.response.send_message(f"The game '{row[1]}' is already being tracked.")
+        return
+
+    # Insert the game using the user's original casing
+    c.execute("INSERT INTO games (game_name) VALUES (?)", (game_name,))
+    conn.commit()
+
+    # Auto-join the creator to save an extra command
+    user_id = str(interaction.user.id)
+    user_name = str(interaction.user)
+    c.execute("SELECT id FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
+    game_id = c.fetchone()[0]
+    c.execute("INSERT INTO user_games (user_id, user_name, game_id) VALUES (?, ?, ?)", (user_id, user_name, game_id))
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"Game '{game_name}' has been added and you've been added to its hunters."
+    )
 
 
 ## Command: Track a game with platform buttons
@@ -125,6 +140,102 @@ async def process_platform(interaction: discord.Interaction, game_name: str, pla
         f"Game '{game_name}' has been added to the list under '{platform}'.",
         ephemeral=True
     )
+
+
+class JoinHuntView(discord.ui.View):
+    def __init__(self, game_id: int, game_name: str):
+        super().__init__(timeout=60)
+        self.game_id = game_id
+        self.game_name = game_name
+
+    @discord.ui.button(label="Join this hunt", style=ButtonStyle.success)
+    async def join_this_hunt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        user_name = str(interaction.user)
+
+        c.execute("SELECT 1 FROM user_games WHERE user_id = ? AND game_id = ?", (user_id, self.game_id))
+        if c.fetchone():
+            await interaction.response.send_message(
+                f"{interaction.user.mention}, you're already hunting '{self.game_name}'.",
+                ephemeral=True
+            )
+            return
+
+        c.execute(
+            "INSERT INTO user_games (user_id, user_name, game_id) VALUES (?, ?, ?)",
+            (user_id, user_name, self.game_id)
+        )
+        conn.commit()
+        await interaction.response.send_message(
+            f"{interaction.user.mention} joined the hunt for '{self.game_name}'.",
+            ephemeral=True
+        )
+
+
+  
+# ---- Mass add modal for solo backlog ----
+class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts"):
+    not_started = discord.ui.TextInput(
+        label='Not started',
+        style=discord.TextStyle.paragraph,
+        required=False,
+        placeholder='E.g. Hollow Knight, Ori and the Blind Forest'
+    )
+    in_progress = discord.ui.TextInput(
+        label='In progress',
+        style=discord.TextStyle.paragraph,
+        required=False,
+        placeholder='E.g. Elden Ring, Hades'
+    )
+
+    def __init__(self, user_id: int, user_name: str):
+        super().__init__()
+        self._user_id = user_id
+        self._user_name = user_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        def parse_list(raw: str) -> list[str]:
+            if not raw:
+                return []
+            return [g.strip() for g in raw.split(",") if g.strip()]
+
+        ns_list = parse_list(str(self.not_started.value))
+        ip_list = parse_list(str(self.in_progress.value))
+
+        added = {"not started": [], "in progress": []}
+
+        # Insert helper (case-insensitive dedupe per-user)
+        def add_games(games: list[str], status: str):
+            for g in games:
+                c.execute(
+                    'SELECT COUNT(*) FROM solo_backlogs WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
+                    (self._user_id, g)
+                )
+                if c.fetchone()[0] == 0:
+                    c.execute(
+                        'INSERT INTO solo_backlogs (user_id, user_name, game_name, status) VALUES (?, ?, ?, ?)',
+                        (self._user_id, self._user_name, g, status)
+                    )
+                    added[status].append(g)
+
+        add_games(ns_list, "not started")
+        add_games(ip_list, "in progress")
+        conn.commit()
+
+        segments = []
+        if added["in progress"]:
+            segments.append("**In Progress:** " + ", ".join(added["in progress"]))
+        if added["not started"]:
+            segments.append("**Not Started:** " + ", ".join(added["not started"]))
+        if not segments:
+            await interaction.response.send_message("No new games were added (duplicates are ignored).", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "Added to your solo backlog:\n" + "\n".join(segments),
+            ephemeral=True
+        )
+
   
 # Command: Show all tracked hunts
 @bot.tree.command(name="showhunts", description="Show all games currently being managed")
@@ -150,65 +261,118 @@ async def show_hunts(interaction: discord.Interaction):
 
 # Command: Show who is hunting a specific game
 @bot.tree.command(name="whohunts", description="Show who is playing a specific game with a user count")
+@app_commands.describe(game_name="Start typing to search...")
 async def who_hunts(interaction: discord.Interaction, game_name: str):
-    c.execute("SELECT id FROM games WHERE game_name = ?", (game_name,))
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
     game = c.fetchone()
-    if game:
-        game_id = game[0]
-        c.execute("SELECT user_name FROM user_games WHERE game_id = ?", (game_id,))
-        users = c.fetchall()
-        if users:
-            user_list = "\n".join([user[0] for user in users])
-            await interaction.response.send_message(
-                f"**Players for '{game_name}' ({len(users)} hunters):**\n{user_list}"
-            )
-        else:
-            await interaction.response.send_message(f"No one is currently signed up to hunt '{game_name}'.")
-    else:
-        await interaction.response.send_message(f"Game '{game_name}' not found.")
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+    c.execute("SELECT user_name FROM user_games WHERE game_id = ?", (game_id,))
+    users = [u[0] for u in c.fetchall()]
+
+    user_list = "\n".join(users) if users else "_No hunters yet_"
+    view = JoinHuntView(game_id, canonical_name)
+
+    await interaction.response.send_message(
+        f"**Players for '{canonical_name}' ({len(users)} hunters):**\n{user_list}",
+        view=view
+    )
+
+@who_hunts.autocomplete('game_name')
+async def who_hunts_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
 
 # Command: Join a hunt
 @bot.tree.command(name="joinhunt", description="Add yourself to a game's player list")
+@app_commands.describe(game_name="Start typing to search...")
 async def join_hunt(interaction: discord.Interaction, game_name: str):
     user_id = str(interaction.user.id)
     user_name = str(interaction.user)
-    c.execute("SELECT id FROM games WHERE game_name = ?", (game_name,))
+
+    # Case-insensitive lookup
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
     game = c.fetchone()
-    if game:
-        game_id = game[0]
-        c.execute(
-            "SELECT * FROM user_games WHERE user_id = ? AND game_id = ?",
-            (user_id, game_id)
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+    c.execute(
+        "SELECT 1 FROM user_games WHERE user_id = ? AND game_id = ?",
+        (user_id, game_id)
+    )
+    if c.fetchone():
+        await interaction.response.send_message(
+            f"{interaction.user.mention}, you're already hunting '{canonical_name}'.",
+            ephemeral=True
         )
-        if not c.fetchone():
-            c.execute(
-                "INSERT INTO user_games (user_id, user_name, game_id) VALUES (?, ?, ?)",
-                (user_id, user_name, game_id)
-            )
-            conn.commit()
-            await interaction.response.send_message(
-                f"{interaction.user.mention}, you've joined the hunt for '{game_name}'."
-            )
-        else:
-            await interaction.response.send_message(
-                f"{interaction.user.mention}, you're already hunting '{game_name}'."
-            )
-    else:
-        await interaction.response.send_message(f"Game '{game_name}' not found.")
+        return
+
+    c.execute(
+        "INSERT INTO user_games (user_id, user_name, game_id) VALUES (?, ?, ?)",
+        (user_id, user_name, game_id)
+    )
+    conn.commit()
+    await interaction.response.send_message(
+        f"{interaction.user.mention}, you've joined the hunt for '{canonical_name}'."
+    )
+
+# ---- Autocomplete for joinhunt ----
+@join_hunt.autocomplete('game_name')
+async def join_hunt_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    # Fetch up to 25 matching games (Discord limit) - case-insensitive
+    like = f"%{current}%"
+    c.execute("SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25", (like,))
+    rows = c.fetchall()
+    return [app_commands.Choice(name=r[0], value=r[0]) for r in rows]
 
 # Command: Leave a hunt
 @bot.tree.command(name="leavehunt", description="Remove yourself from a game's player list")
+@app_commands.describe(game_name="Start typing to search...")
 async def leave_hunt(interaction: discord.Interaction, game_name: str):
     user_id = str(interaction.user.id)
-    c.execute("SELECT id FROM games WHERE game_name = ?", (game_name,))
+
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
     game = c.fetchone()
-    if game:
-        game_id = game[0]
-        c.execute("DELETE FROM user_games WHERE user_id = ? AND game_id = ?", (user_id, game_id))
-        conn.commit()
-        await interaction.response.send_message(f"{interaction.user.mention}, you've left the hunt for '{game_name}'.")
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+    c.execute("DELETE FROM user_games WHERE user_id = ? AND game_id = ?", (user_id, game_id))
+    conn.commit()
+
+    if c.rowcount:
+        await interaction.response.send_message(
+            f"{interaction.user.mention}, you've left the hunt for '{canonical_name}'."
+        )
     else:
-        await interaction.response.send_message(f"Game '{game_name}' not found.")
+        await interaction.response.send_message(
+            f"{interaction.user.mention}, you weren't signed up for '{canonical_name}'.",
+            ephemeral=True
+        )
+
+@leave_hunt.autocomplete('game_name')
+async def leave_hunt_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
 
 # Command: Show games the user is hunting
 @bot.tree.command(name="showmyhunts", description="Show all games you are added to")
@@ -284,12 +448,82 @@ async def change_hunt(interaction: Interaction, old_name: str, new_name: str):
         await interaction.response.send_message(f"Game '{old_name}' not found.")
 
 # Command: Remove a game from the list (Admin Only)
-@bot.tree.command(name="forgethunt", description="Remove a game from the list (Admin Only)")
-@commands.has_permissions(administrator=True)
-async def forget_hunt(interaction: Interaction, game_name: str):
-    c.execute("DELETE FROM games WHERE game_name = ?", (game_name,))
-    conn.commit()
-    await interaction.response.send_message(f"Game '{game_name}' has been removed.")
+class ConfirmForgetView(discord.ui.View):
+    def __init__(self, invoker_id: int, game_id: int, canonical_name: str):
+        super().__init__(timeout=60)
+        self.invoker_id = invoker_id
+        self.game_id = game_id
+        self.canonical_name = canonical_name
+
+    async def _not_invoker(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("Only the requester can confirm this action.", ephemeral=True)
+            return True
+        return False
+
+    @discord.ui.button(label="Yes, remove this game", style=ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._not_invoker(interaction):
+            return
+        # Remove all signups, then the game
+        c.execute("DELETE FROM user_games WHERE game_id = ?", (self.game_id,))
+        c.execute("DELETE FROM games WHERE id = ?", (self.game_id,))
+        conn.commit()
+        await interaction.response.edit_message(
+            content=f"Removed '{self.canonical_name}' from the tracked hunts.", view=None
+        )
+
+    @discord.ui.button(label="Cancel", style=ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._not_invoker(interaction):
+            return
+        await interaction.response.edit_message(content="Cancelled. No changes made.", view=None)
+
+
+@bot.tree.command(name="forgethunt", description="Remove a game from the tracked list (deletes the game for everyone(Admin Only)).")
+@app_commands.describe(game_name="Start typing to search...")
+async def forget_hunt(interaction: discord.Interaction, game_name: str):
+    # Find the game (case-insensitive)
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
+    game = c.fetchone()
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+
+    # Who's hunting?
+    c.execute("SELECT user_id FROM user_games WHERE game_id = ?", (game_id,))
+    hunters = [u[0] for u in c.fetchall()]
+    others_count = len([u for u in hunters if u != str(interaction.user.id)])
+
+    # If the requester is the only hunter, remove immediately
+    if others_count == 0:
+        c.execute("DELETE FROM user_games WHERE game_id = ?", (game_id,))
+        c.execute("DELETE FROM games WHERE id = ?", (game_id,))
+        conn.commit()
+        await interaction.response.send_message(
+            f"Removed '{canonical_name}'. (You were the only hunter.)"
+        )
+        return
+
+    # Otherwise, ask for confirmation
+    await interaction.response.send_message(
+        f"Are you sure you want to remove '{canonical_name}'? "
+        f"**{others_count}** other user(s) are still hunting this game.",
+        view=ConfirmForgetView(interaction.user.id, game_id, canonical_name),
+        ephemeral=True
+    )
+
+@forget_hunt.autocomplete('game_name')
+async def forget_hunt_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
 
 # Command: Remove a user from all games (Admin Only)
 @bot.tree.command(name="forgethunter", description="Remove a user from all games (Admin only)")
@@ -377,6 +611,13 @@ async def finish_hunt(interaction: discord.Interaction, game_name: str):
     else:
         await interaction.response.send_message(f"Cannot finish '{game_name}': either it doesn't exist or it's not in progress.")
 
+
+# Command: /newmasshunts
+@bot.tree.command(name="v", description="Add multiple games to your solo backlog via a modal.")
+async def new_mass_hunts(interaction: discord.Interaction):
+    await interaction.response.send_modal(MassHuntsModal(interaction.user.id, interaction.user.name))
+
+
 # Command: /myfinishedhunts
 @bot.tree.command(name="myfinishedhunts", description="Show completed games, either all-time or for a specific month and year.")
 async def my_finished_hunts(interaction: discord.Interaction, month: int = None, year: int = None):
@@ -434,7 +675,7 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
 @bot.tree.command(name="help", description="Displays a list of all available commands.")
 async def help_command(interaction: discord.Interaction):
     help_text = """
-**Haven's Helper Commands:**
+**Haven's Ledger Commands:**
 
 - **Co-op and Multiplayer Backlog Management:**
   - `/trackhunt "game name"` - Add a game to the co-op backlog.
@@ -481,25 +722,32 @@ async def who_added(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"No records found for the game '{game_name}'.")
 
 # Command: Call all hunters for a specific game
-@bot.tree.command(name="callhunters", description="Tag all users signed up to a specific game")
-async def call_hunters(interaction: Interaction, game_name: str):
-    c.execute('''SELECT ug.user_id 
-                 FROM user_games ug 
-                 JOIN games g ON g.id = ug.game_id 
-                 WHERE g.game_name = ?''', (game_name,))
-    users = c.fetchall()
-    if users:
-        mentions = " ".join([f"<@{user[0]}>" for user in users])
-        await interaction.response.send_message(f"Calling all hunters for '{game_name}':\n{mentions}")
-    else:
-        await interaction.response.send_message(f"No hunters are signed up for '{game_name}'.")
+@bot.tree.command(name="callhunters", description="Tag all users signed up to a specific game with an optional message")
+async def call_hunters(interaction: Interaction, game_name: str, message: str | None = None):
+    # Case-insensitive game lookup
+    c.execute('SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)', (game_name,))
+    game = c.fetchone()
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
 
-# Command: Tags all users singed up for any game with a custom message
-@bot.tree.command(name="remindhunters", description="Tag all unique users signed up for any game with an optional message.")
-async def remind_hunters(interaction: discord.Interaction, message: str = "Hi hunters, please review your backlog and remove any invalid entries!"):
-    # Query unique users from the user_games table
-    c.execute('SELECT DISTINCT user_id FROM user_games')
+    game_id, canonical_name = game
+    c.execute('SELECT ug.user_id FROM user_games ug WHERE ug.game_id = ?', (game_id,))
     users = c.fetchall()
+
+    if not users:
+        await interaction.response.send_message(f"No hunters are signed up for '{canonical_name}'.", ephemeral=True)
+        return
+
+    mentions = " ".join([f"<@{user[0]}>" for user in users])
+    extra = ""
+    if message and message.strip():
+        extra = f"\n\n{interaction.user.mention} says\n> {message.strip()}"
+
+    await interaction.response.send_message(
+        f"Calling all hunters for '{canonical_name}':\n{mentions}{extra}"
+    )
+
 
     if users:
         mentions = " ".join([f"<@{user[0]}>" for user in users])
