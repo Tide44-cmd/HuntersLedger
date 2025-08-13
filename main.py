@@ -197,44 +197,87 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts"):
         def parse_list(raw: str) -> list[str]:
             if not raw:
                 return []
+            # Split on commas, strip whitespace, drop empties
             return [g.strip() for g in raw.split(",") if g.strip()]
 
-        ns_list = parse_list(str(self.not_started.value))
-        ip_list = parse_list(str(self.in_progress.value))
+        def norm(s: str) -> str:
+            # Normalize for case/spacing comparisons
+            return " ".join(s.split()).lower()
 
-        added = {"not started": [], "in progress": []}
+        ns_raw = parse_list(str(self.not_started.value))
+        ip_raw = parse_list(str(self.in_progress.value))
 
-        # Insert helper (case-insensitive dedupe per-user)
-        def add_games(games: list[str], status: str):
-            for g in games:
+        # Deduplicate within each list while keeping last-typed casing
+        ns_map = {norm(g): g for g in ns_raw}
+        ip_map = {norm(g): g for g in ip_raw}
+
+        # Conflict resolution: if a game is in both lists, "In progress" wins
+        for key in set(ns_map.keys()) & set(ip_map.keys()):
+            ns_map.pop(key, None)
+
+        added_ns, added_ip = [], []
+        moved_to_ns, moved_to_ip = [], []
+        unchanged = []
+
+        def upsert(game_display: str, target_status: str, added_list: list[str], moved_list: list[str]):
+            # Does this title already exist for the user?
+            c.execute(
+                'SELECT game_name, status FROM solo_backlogs WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
+                (self._user_id, game_display)
+            )
+            row = c.fetchone()
+
+            if not row:
+                # Insert new (use the casing the user typed)
                 c.execute(
-                    'SELECT COUNT(*) FROM solo_backlogs WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
-                    (self._user_id, g)
+                    'INSERT INTO solo_backlogs (user_id, user_name, game_name, status) VALUES (?, ?, ?, ?)',
+                    (self._user_id, self._user_name, game_display, target_status)
                 )
-                if c.fetchone()[0] == 0:
-                    c.execute(
-                        'INSERT INTO solo_backlogs (user_id, user_name, game_name, status) VALUES (?, ?, ?, ?)',
-                        (self._user_id, self._user_name, g, status)
-                    )
-                    added[status].append(g)
+                added_list.append(game_display)
+                return
 
-        add_games(ns_list, "not started")
-        add_games(ip_list, "in progress")
+            existing_name, existing_status = row
+            if existing_status != target_status:
+                # Move status (keep existing casing; don't overwrite user's canonical title)
+                c.execute(
+                    'UPDATE solo_backlogs SET status = ?, user_name = ? WHERE user_id = ? AND LOWER(game_name) = LOWER(?)',
+                    (target_status, self._user_name, self._user_id, game_display)
+                )
+                moved_list.append(existing_name)
+            else:
+                unchanged.append(existing_name)
+
+        # Apply Not started first, then In progress (IP wins in conflicts handled above)
+        for g in ns_map.values():
+            upsert(g, "not started", added_ns, moved_to_ns)
+        for g in ip_map.values():
+            upsert(g, "in progress", added_ip, moved_to_ip)
+
         conn.commit()
 
+        # Build a tidy summary
         segments = []
-        if added["in progress"]:
-            segments.append("**In Progress:** " + ", ".join(added["in progress"]))
-        if added["not started"]:
-            segments.append("**Not Started:** " + ", ".join(added["not started"]))
+        if added_ip:
+            segments.append("**In Progress – added:** " + ", ".join(added_ip))
+        if moved_to_ip:
+            segments.append("**Moved to In Progress:** " + ", ".join(moved_to_ip))
+        if added_ns:
+            segments.append("**Not Started – added:** " + ", ".join(added_ns))
+        if moved_to_ns:
+            segments.append("**Moved to Not Started:** " + ", ".join(moved_to_ns))
+
         if not segments:
-            await interaction.response.send_message("No new games were added (duplicates are ignored).", ephemeral=True)
+            await interaction.response.send_message(
+                "Nothing to change. (Everything you entered is already in that status.)",
+                ephemeral=True
+            )
             return
 
         await interaction.response.send_message(
-            "Added to your solo backlog:\n" + "\n".join(segments),
+            "Updated your solo backlog:\n" + "\n".join(segments),
             ephemeral=True
         )
+
 
   
 # Command: Show all tracked hunts
