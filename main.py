@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import random
 from PIL import Image, ImageDraw, ImageFont
 import requests
+import re
 
 
 # Load environment variables
@@ -194,7 +195,15 @@ async def send_safely(
 
   
 # ---- Mass add modal for solo backlog ----
-class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separate by commas or new lines"):
+class MassHuntsModal(discord.ui.Modal, title="Mass add solo hunts"):
+    instructions = discord.ui.TextInput(
+      label="How to use",
+      style=discord.TextStyle.short,
+      default="Add items separated by commas (,).",
+      required=False,
+      min_length=len("Add items separated by commas (,)."),
+      max_length=len("Add items separated by commas (,)."),
+    )
     not_started = discord.ui.TextInput(
         label='Not started',
         style=discord.TextStyle.paragraph,
@@ -217,7 +226,7 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
         def parse_list(raw: str) -> list[str]:
             if not raw:
                 return []
-            # NEW: split on commas OR new lines (and semicolons), trim, drop empties
+            # Accept commas, semicolons, or new lines
             parts = re.split(r"[,;\n]+", str(raw))
             return [p.strip() for p in parts if p.strip()]
 
@@ -227,10 +236,11 @@ class MassHuntsModal(discord.ui.Modal, title="Add Multiple Solo Hunts — separa
         ns_raw = parse_list(str(self.not_started.value))
         ip_raw = parse_list(str(self.in_progress.value))
 
-        # ---- everything below unchanged ----
+        # --- unchanged logic below ---
         ns_map = {norm(g): g for g in ns_raw}
         ip_map = {norm(g): g for g in ip_raw}
 
+        # In progress wins if listed in both
         for key in set(ns_map.keys()) & set(ip_map.keys()):
             ns_map.pop(key, None)
 
@@ -729,61 +739,42 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"No feedback found for '{game_name}'.")
 
 # Command: Displays a list of all available commands
-@bot.tree.command(name="help", description="Show help for Haven's Ledger")
-async def help_cmd(interaction: discord.Interaction):
-    e = Embed(title="Haven's Ledger — Help", color=Color.gold())
-    e.description = "Find co-op buddies, manage multiplayer hunts, and track your solo backlog."
+@bot.tree.command(name="help", description="Displays a list of all available commands.")
+async def help_command(interaction: discord.Interaction):
+    help_text = """
+**Haven's Helper Commands:**
 
-    # Co-op & Multiplayer
-    e.add_field(
-        name="Co-op & Multiplayer",
-        value="\n".join([
-            "`/trackhunt <game>` — Add a game to the co-op backlog **and auto-add yourself** if it’s new.",
-            "`/showhunts` — Show all games currently being managed.",
-            "`/whohunts <game>` — See who’s hunting a game (**Join** button included).",
-            "`/joinhunt <game>` — Join a game’s hunters.",
-            "`/leavehunt <game>` — Leave that game’s hunters.",
-            "`/showmyhunts` — List the games you’ve joined.",
-            "`/showhunter @user` — List the games another user has joined.",
-            "`/mosthunted` — Top 5 most popular games.",
-            "`/nothunted` — Games with no hunters yet.",
-            "`/changehunt <old> <new>` — Rename a tracked game.",
-            "`/callhunters <game> [message]` — Ping all hunters **with an optional message**.",
-        ]),
-        inline=False
-    )
+- **Co-op and Multiplayer Backlog Management:**
+  - `/trackhunt "game name"` - Add a game to the co-op backlog.
+  - `/showhunts` - Show all games currently being managed.
+  - `/whohunts "game name"` - Show who is playing a specific game.
+  - `/joinhunt "game name"` - Add yourself to a game's player list.
+  - `/leavehunt "game name"` - Remove yourself from a game's player list.
+  - `/showmyhunts` - Show all games you are added to.
+  - `/showhunter @user` - Show all games a user is added to.
+  - `/mosthunted` - Show the top 5 most popular games.
+  - `/nothunted` - Show a list of games with no users signed up.
+  - `/changehunt "old name" "new name"` - Rename a game in the database.
+  - `/callhunters "game name"` - Tag all users signed up to a specific game.
 
-    # Solo Backlog
-    e.add_field(
-        name="Solo Backlog",
-        value="\n".join([
-            "`/newhunt <game>` — Add to your solo backlog as **not started**.",
-            "`/mysolohunts` — View your solo backlog (not started / in progress).",
-            "`/starthunt <game>` — Set status to **in progress**.",
-            "`/finishhunt <game>` — Set status to **completed**.",
-            "`/myfinishedhunts [Month] [Year]` — View completed games (all-time or a specific month/year).",
-            "`/givemeahunt` — Randomly pick a hunt and set it to **in progress**.",
-            "`/ratehunt <game> <1-5> [comments]` — Rate a completed game.",
-            "`/huntfeedback <game>` — See feedback & ratings for a game.",
-            "`/generatecard <game>` — Generate a completion card.",
-            "`/newmasshunts` — Modal to add/move multiple games at once (accepts **commas or new lines**).",
-        ]),
-        inline=False
-    )
+- **Solo Backlog Management:**
+  - `/newhunt "game name"` - Add a game to your solo backlog with the status "not started."
+  - `/mysolohunts` - Display your solo backlog with statuses ("not started" or "in progress").
+  - `/starthunt "game name"` - Set a game's status to "in progress."
+  - `/finishhunt "game name"` - Set a game's status to "completed."
+  - `/myfinishedhunts [Month] [Year]` - Show completed games, either all-time or for a specific month and year.
+  - `/givemeahunt` - Randomly select a hunt from your backlog and set it to "in progress."
+  - `/ratehunt "game name" "rating out of 5" [comments]` - Rate a completed game and leave optional comments.
+  - `/huntfeedback "game name"` - View feedback and ratings left by others for a specific game.
+  - `/generatecard "game name"` - Generate a completion card for a finished solo game.
 
+- **Bot Information:**
+  - `/botversion` - Displays the bot's version and additional information.
+  - `/healthcheck` - Check the bot's status and health.
 
-    # Bot info
-    e.add_field(
-        name="Bot Information",
-        value="\n".join([
-            "`/botversion` — Bot version & info.",
-            "`/healthcheck` — Bot status/health.",
-        ]),
-        inline=False
-    )
-
-    e.set_footer(text="Tip: start typing a game and use autocomplete. Be kind with pings.")
-    await interaction.response.send_message(embed=e, ephemeral=False)
+Need further assistance? Feel free to ask!
+"""
+    await interaction.response.send_message(help_text)
   
 # Command: Check who added a specific game (Admin only).
 @bot.tree.command(name="whoadded", description="Check who added a specific game (Admin only).")
