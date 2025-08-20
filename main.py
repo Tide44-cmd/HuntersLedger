@@ -374,6 +374,17 @@ async def who_hunts(interaction: discord.Interaction, game_name: str):
         view=view
     )
 
+# Autocomplete for game names
+@who_hunts.autocomplete("game_name")
+async def who_hunts_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
+
 
 
 # Command: Join a hunt
