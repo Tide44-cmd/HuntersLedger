@@ -364,19 +364,16 @@ async def who_hunts(interaction: discord.Interaction, game_name: str):
     user_list = "\n".join(users) if users else "_No hunters yet_"
     view = JoinHuntView(game_id, canonical_name)
 
+    footer_note = (
+        "\n\n*If the button timed out, use* `/whohunts` *and search for the game again, "
+        "or join directly with* `/joinhunt`."
+    )
+
     await interaction.response.send_message(
-        f"**Players for '{canonical_name}' ({len(users)} hunters):**\n{user_list}",
+        f"**Players for '{canonical_name}' ({len(users)} hunters):**\n{user_list}{footer_note}",
         view=view
     )
 
-@who_hunts.autocomplete('game_name')
-async def who_hunts_autocomplete(interaction: discord.Interaction, current: str):
-    like = f"%{current}%"
-    c.execute(
-        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
-        (like,)
-    )
-    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
 
 
 # Command: Join a hunt
