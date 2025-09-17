@@ -15,6 +15,14 @@ import random
 from PIL import Image, ImageDraw, ImageFont
 import requests
 import re
+import asyncio
+
+# Load extensions on startup
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
+    print(f"Logged in as {bot.user}!")
 
 
 # Load environment variables
