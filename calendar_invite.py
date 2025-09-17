@@ -153,7 +153,7 @@ class CalendarInviteCog(commands.Cog):
                 f"📅 Add it to your calendar below:"
             ),
             file=discord.File(fp=BytesIO(ics_data), filename=filename),
-            ephemeral=True
+            ephemeral=False
         )
 
 # --- Setup for loading this cog ---
