@@ -71,17 +71,11 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # Load extensions on startup
-@bot.event
+@bot.event # Sync slash commands with Discord
 async def on_ready():
+  # Register the bot's slash commands globally (across all servers) or for specific guilds
     await bot.tree.sync()
     await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
-    print(f"Logged in as {bot.user}!")
-
-# Sync slash commands with Discord
-@bot.event
-async def on_ready():
-    # Register the bot's slash commands globally (across all servers) or for specific guilds
-    await bot.tree.sync()  # Global sync
     print(f"Logged in as {bot.user}!")
 
 # Command: Track a game with platform in the game title
