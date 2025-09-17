@@ -17,12 +17,7 @@ import requests
 import re
 import asyncio
 
-# Load extensions on startup
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
-    print(f"Logged in as {bot.user}!")
+
 
 
 # Load environment variables
@@ -74,6 +69,13 @@ conn.commit()
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
+
+# Load extensions on startup
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
+    print(f"Logged in as {bot.user}!")
 
 # Sync slash commands with Discord
 @bot.event
