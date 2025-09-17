@@ -1,3 +1,7 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
 from io import BytesIO
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
@@ -95,55 +99,40 @@ END:VCALENDAR""".encode("utf-8")
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._ -]+", "", name).strip().replace(" ", "_")[:60] or "session"
 
-# --- Slash command ---
+# --- Cog class ---
+class CalendarInviteCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
 
-@bot.tree.command(name="huntingsession", description="Create a calendar invite for a game session.")
-@app_commands.describe(
-    game="Name of the game (will be the calendar title)",
-    date="Date of the session (e.g. 2025-09-17 or 17/09/2025)",
-    time="Time (e.g. 1700, 17:00, 5pm)",
-    timezone="Optional: timezone like Europe/London, GMT, PST etc.",
-    notes="Optional notes to include in the calendar"
-)
-async def huntingsession(
-    interaction: discord.Interaction,
-    game: str,
-    date: str,
-    time: str,
-    timezone: str | None = None,
-    notes: str | None = None
-):
-    await interaction.response.defer(ephemeral=True)
-
-    d = _parse_date(date)
-    if not d:
-        return await interaction.followup.send("❌ Invalid date format. Try `2025-09-17`, `17/09/2025`, or `17 Sep 2025`.", ephemeral=True)
-
-    t = _parse_time(time)
-    if not t:
-        return await interaction.followup.send("❌ Invalid time format. Try `1700`, `17:00`, or `5pm`.", ephemeral=True)
-
-    hour, minute = t
-    tzinfo = _resolve_tz(timezone)
-    tz_label = tzinfo.key
-    local_start = datetime(d.year, d.month, d.day, hour, minute, tzinfo)
-    local_end = local_start + timedelta(hours=DEFAULT_DURATION_HOURS)
-
-    start_utc = local_start.astimezone(timezone.utc)
-    end_utc = local_end.astimezone(timezone.utc)
-
-    description = notes.strip() if notes else "This calendar invite was created by Hunter's Ledger for your upcoming hunt."
-    location = "Discord - Hunter's Haven"
-
-    ics_data = _build_ics(game, start_utc, end_utc, location, description)
-    filename = f"{_safe_filename(game)}_{local_start.strftime('%Y-%m-%d_%H%M')}_{tz_label.replace('/', '-')}.ics"
-
-    await interaction.followup.send(
-        content=(
-            f"✅ **{game}** session created for **{local_start.strftime('%a %d %b %Y • %H:%M')}** ({tz_label})\n"
-            f"• Duration: {DEFAULT_DURATION_HOURS}h\n• Reminder: 15 mins before\n"
-            f"📅 Add it to your calendar below:"
-        ),
-        file=discord.File(fp=BytesIO(ics_data), filename=filename),
-        ephemeral=True
+    @app_commands.command(name="huntingsession", description="Create a calendar invite for a game session.")
+    @app_commands.describe(
+        game="Name of the game (will be the calendar title)",
+        date="Date of the session (e.g. 2025-09-17 or 17/09/2025)",
+        time="Time (e.g. 1700, 17:00, 5pm)",
+        timezone="Optional: timezone like Europe/London, GMT, PST etc.",
+        notes="Optional notes to include in the calendar"
     )
+    async def huntingsession(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        date: str,
+        time: str,
+        timezone: str | None = None,
+        notes: str | None = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        d = _parse_date(date)
+        if not d:
+            return await interaction.followup.send("❌ Invalid date format. Try `2025-09-17`, `17/09/2025`, or `17 Sep 2025`.", ephemeral=True)
+
+        t = _parse_time(time)
+        if not t:
+            return await interaction.followup.send("❌ Invalid time format. Try `1700`, `17:00`, or `5pm`.", ephemeral=True)
+
+        hour, minute = t
+        tzinfo = _resolve_tz(timezone)
+        tz_label = tzinfo.key
+        local_start = datetime(d.year, d.month, d.day, hour, minute, tzinfo)
+        local_end = local_start + timedelta(hours=
