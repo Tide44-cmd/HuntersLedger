@@ -135,4 +135,27 @@ class CalendarInviteCog(commands.Cog):
         tzinfo = _resolve_tz(timezone)
         tz_label = tzinfo.key
         local_start = datetime(d.year, d.month, d.day, hour, minute, tzinfo)
-        local_end = local_start + timedelta(hours=
+        local_end = local_start + timedelta(hours=DEFAULT_DURATION_HOURS)
+
+        start_utc = local_start.astimezone(timezone.utc)
+        end_utc = local_end.astimezone(timezone.utc)
+
+        description = notes.strip() if notes else "This calendar invite was created by Hunter's Ledger for your upcoming hunt."
+        location = "Discord - Hunter's Haven"
+
+        ics_data = _build_ics(game, start_utc, end_utc, location, description)
+        filename = f"{_safe_filename(game)}_{local_start.strftime('%Y-%m-%d_%H%M')}_{tz_label.replace('/', '-')}.ics"
+
+        await interaction.followup.send(
+            content=(
+                f"✅ **{game}** session created for **{local_start.strftime('%a %d %b %Y • %H:%M')}** ({tz_label})\n"
+                f"• Duration: {DEFAULT_DURATION_HOURS}h\n• Reminder: 15 mins before\n"
+                f"📅 Add it to your calendar below:"
+            ),
+            file=discord.File(fp=BytesIO(ics_data), filename=filename),
+            ephemeral=True
+        )
+
+# --- Setup for loading this cog ---
+async def setup(bot: commands.Bot):
+    await bot.add_cog(CalendarInviteCog(bot))
