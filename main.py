@@ -696,14 +696,32 @@ async def my_solo_hunts(interaction: discord.Interaction):
 
 # Command: /starthunt
 @bot.tree.command(name="starthunt", description="Set a game's status to 'in progress.'")
+@app_commands.describe(game_name="Select a game from your 'not started' solo backlog")
 async def start_hunt(interaction: discord.Interaction, game_name: str):
-    c.execute('UPDATE solo_backlogs SET status = "in progress" WHERE user_id = ? AND game_name = ? AND status = "not started"',
-              (interaction.user.id, game_name))
+    c.execute('''
+        UPDATE solo_backlogs 
+        SET status = "in progress" 
+        WHERE user_id = ? AND game_name = ? AND status = "not started"
+    ''', (interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
         await interaction.response.send_message(f"Game '{game_name}' is now 'in progress'.")
     else:
         await interaction.response.send_message(f"Cannot start '{game_name}': either it doesn't exist or it's already started.")
+
+
+@start_hunt.autocomplete('game_name')
+async def starthunt_autocomplete(interaction: discord.Interaction, current: str):
+    user_id = str(interaction.user.id)
+    like = f"%{current}%"
+    c.execute(
+        '''SELECT game_name FROM solo_backlogs
+           WHERE user_id = ? AND status = 'not started' AND game_name LIKE ? COLLATE NOCASE
+           ORDER BY game_name ASC LIMIT 25''',
+        (user_id, like)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
 
 # Command: /giveup - Remove a game from your solo backlog.
 @bot.tree.command(name="giveup", description="Remove a game from your solo backlog.")
@@ -727,6 +745,19 @@ async def finish_hunt(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"Game '{game_name}' is now 'completed'.")
     else:
         await interaction.response.send_message(f"Cannot finish '{game_name}': either it doesn't exist or it's not in progress.")
+
+@finish_hunt.autocomplete('game_name')
+async def finishhunt_autocomplete(interaction: discord.Interaction, current: str):
+    user_id = str(interaction.user.id)
+    like = f"%{current}%"
+    c.execute(
+        '''SELECT game_name FROM solo_backlogs
+           WHERE user_id = ? AND status = 'in progress' AND game_name LIKE ? COLLATE NOCASE
+           ORDER BY game_name ASC LIMIT 25''',
+        (user_id, like)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
 
 
 # Command: /newmasshunts
