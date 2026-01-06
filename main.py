@@ -108,6 +108,26 @@ CREATE TABLE IF NOT EXISTS challenge_stats (
     az_completed_count INTEGER DEFAULT 0
 )
 ''')
+
+# --- Marks of the Hunt ---
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS hunting_marks (
+    key TEXT PRIMARY KEY,
+    slot_index INTEGER NOT NULL,        -- fixed position on board (0..N-1)
+    is_hidden INTEGER DEFAULT 0          -- 1 = secret mark not shown in empty slot hints
+)
+""")
+
+c.execute("""
+CREATE TABLE IF NOT EXISTS user_hunting_marks (
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, key),
+    FOREIGN KEY (key) REFERENCES hunting_marks(key)
+)
+""")
 conn.commit()
 
 # Bot setup
@@ -713,48 +733,55 @@ async def new_hunt(interaction: discord.Interaction, game_name: str):
     await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
 
 
-# Command: /mysolohunts — paginated via _send_long
-@bot.tree.command(
-    name="mysolohunts",
-    description="Display your solo backlog with statuses ('not started' or 'in progress')."
-)
+@bot.tree.command(name="mysolohunts", description="Show your active solo hunts (paginated).")
 async def my_solo_hunts(interaction: discord.Interaction):
-    # Only show the two active statuses; order: in progress first, then not started; then A–Z
-    c.execute(
-        '''
+    user_id = str(interaction.user.id)
+
+    c.execute("""
         SELECT game_name, status
         FROM solo_backlogs
-        WHERE user_id = ? AND status IN ("in progress", "not started")
-        ORDER BY CASE status WHEN "in progress" THEN 1 WHEN "not started" THEN 2 ELSE 3 END,
-                 game_name COLLATE NOCASE ASC
-        ''',
-        (interaction.user.id,)
-    )
+        WHERE user_id = ?
+          AND status IN ("in progress", "not started")
+        ORDER BY
+            CASE status
+                WHEN "in progress" THEN 0
+                WHEN "not started" THEN 1
+            END,
+            game_name COLLATE NOCASE ASC
+    """, (user_id,))
+
     rows = c.fetchall()
 
     if not rows:
-        # Let the helper handle the first send
-        await _send_long(interaction, "Your solo backlog is empty.", [])
+        await interaction.response.send_message(
+            "You don't have any active solo hunts right now.",
+            ephemeral=True
+        )
         return
 
-    in_progress = [name for (name, status) in rows if status == "in progress"]
-    not_started = [name for (name, status) in rows if status == "not started"]
+    lines = []
+    for name, status in rows:
+        if status == "in progress":
+            lines.append(f"▶ **{name}** _(In Progress)_")
+        else:
+            lines.append(f"• {name} _(Not Started)_")
 
-    total = len(in_progress) + len(not_started)
-    header = f"**Your solo hunts** — In Progress: {len(in_progress)} • Not Started: {len(not_started)} • Total: {total}"
+    pages = chunk_lines(lines)
 
-    # Build line list for _send_long (it will chunk across multiple messages)
-    lines: list[str] = []
-    if in_progress:
-        lines.append("**In Progress:**")
-        lines.extend(in_progress)
-    if not_started:
-        if in_progress:
-            lines.append("")  # blank line between sections
-        lines.append("**Not Started:**")
-        lines.extend(not_started)
+    title = f"🎯 {interaction.user.display_name}'s Active Solo Hunts"
 
-    await _send_long(interaction, header, lines)
+    view = PagedTextView(
+        pages=pages,
+        title=title,
+        invoker_id=interaction.user.id
+    )
+
+    # ❗ NOT ephemeral
+    await interaction.response.send_message(
+        embed=view.make_embed(),
+        view=view
+    )
+
 
 
 # Command: /starthunt
@@ -792,6 +819,8 @@ async def give_up(interaction: discord.Interaction, game_name: str):
     c.execute('DELETE FROM solo_backlogs WHERE user_id = ? AND game_name = ?', (interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
+      # ✅ Only evaluate after a successful finish
+#        evaluate_and_unlock_marks(user_id)
         await interaction.response.send_message(f"Game '{game_name}' has been removed from your solo backlog.")
     else:
         await interaction.response.send_message(f"Cannot find the game '{game_name}' in your solo backlog.")
@@ -805,6 +834,8 @@ async def finish_hunt(interaction: discord.Interaction, game_name: str):
               (interaction.user.id, game_name))
     conn.commit()
     if c.rowcount:
+      # ✅ Only evaluate after a successful finish
+#        evaluate_and_unlock_marks(user_id)
         await interaction.response.send_message(f"Game '{game_name}' is now 'completed'.")
     else:
         await interaction.response.send_message(f"Cannot finish '{game_name}': either it doesn't exist or it's not in progress.")
@@ -1683,6 +1714,332 @@ async def reset_az(interaction: discord.Interaction):
         "✅ Your A–Z list has been cleared. Run `/azhunts` to generate a new one.",
         ephemeral=True
     )
+
+# Hunter's Marks
+
+def seed_hunting_marks():
+    marks = [
+        # key, slot_index, is_hidden
+        ("MARK_FIRST_BLOOD", 0, 0),
+        ("MARK_50",          1, 0),
+        ("MARK_100",         2, 0),
+        ("MARK_150",         3, 0),
+        ("MARK_FOCUSED_MONTH", 4, 0),
+        ("MARK_NEXT10",        5, 0),
+        ("MARK_AZ",            6, 0),
+        ("MARK_RELENTLESS",    7, 0),
+        ("MARK_LONG_HUNT",     8, 0),
+        ("MARK_HAVEN_TOUCHED", 9, 0),
+
+        # Hidden 11th
+        ("MARK_BROKEN_OATH", 10, 1),
+    ]
+    for key, slot, hidden in marks:
+        c.execute(
+            "INSERT OR IGNORE INTO hunting_marks (key, slot_index, is_hidden) VALUES (?, ?, ?)",
+            (key, slot, hidden)
+        )
+    conn.commit()
+
+seed_hunting_marks()
+
+from datetime import datetime, timedelta
+
+def get_total_completed_hunts(user_id: str) -> int:
+    c.execute("""
+        SELECT COUNT(*)
+        FROM solo_backlogs
+        WHERE user_id = ? AND status = 'completed'
+    """, (user_id,))
+    return int(c.fetchone()[0] or 0)
+
+def get_total_abandoned_hunts(user_id: str) -> int:
+    c.execute("""
+        SELECT COUNT(*)
+        FROM solo_backlogs
+        WHERE user_id = ? AND status = 'abandoned'
+    """, (user_id,))
+    return int(c.fetchone()[0] or 0)
+
+def get_completed_in_month(user_id: str, year: int, month: int) -> int:
+    c.execute("""
+        SELECT COUNT(*)
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND status = 'completed'
+          AND completion_date IS NOT NULL
+          AND strftime('%Y', completion_date) = ?
+          AND strftime('%m', completion_date) = ?
+    """, (user_id, str(year), f"{month:02d}"))
+    return int(c.fetchone()[0] or 0)
+
+def get_next10_completed_count(user_id: str) -> int:
+    # from challenge_stats you already added
+    c.execute("""
+        SELECT next10_completed_count
+        FROM challenge_stats
+        WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    return int(row[0] or 0) if row else 0
+
+def get_az_completed_count(user_id: str) -> int:
+    c.execute("""
+        SELECT az_completed_count
+        FROM challenge_stats
+        WHERE user_id = ?
+    """, (user_id,))
+    row = c.fetchone()
+    return int(row[0] or 0) if row else 0
+
+def get_months_with_any_completion(user_id: str) -> int:
+    c.execute("""
+        SELECT COUNT(DISTINCT strftime('%Y-%m', completion_date))
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND status = 'completed'
+          AND completion_date IS NOT NULL
+    """, (user_id,))
+    return int(c.fetchone()[0] or 0)
+
+def get_longest_weekly_streak(user_id: str) -> int:
+    """
+    Simple streak measure: number of consecutive weeks with >=1 completion,
+    ending at the most recent completed week.
+
+    You can swap this later for daily streaks; this is more forgiving and realistic.
+    """
+    c.execute("""
+        SELECT completion_date
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND status = 'completed'
+          AND completion_date IS NOT NULL
+        ORDER BY completion_date ASC
+    """, (user_id,))
+    dates = [r[0] for r in c.fetchall()]
+    if not dates:
+        return 0
+
+    # map to ISO year-week
+    weeks = []
+    for d in dates:
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+        except Exception:
+            continue
+        weeks.append(dt.isocalendar()[:2])  # (year, week)
+
+    weeks = sorted(set(weeks))
+    if not weeks:
+        return 0
+
+    # compute longest consecutive run overall
+    longest = 1
+    cur = 1
+
+    def week_index(yw):
+        y, w = yw
+        return y * 53 + w  # safe monotonic-ish index
+
+    for i in range(1, len(weeks)):
+        if week_index(weeks[i]) == week_index(weeks[i-1]) + 1:
+            cur += 1
+            longest = max(longest, cur)
+        else:
+            cur = 1
+    return longest
+
+def unlock_mark(user_id: str, key: str) -> bool:
+    c.execute("""
+        INSERT OR IGNORE INTO user_hunting_marks (user_id, key)
+        VALUES (?, ?)
+    """, (user_id, key))
+    conn.commit()
+    return c.rowcount > 0
+
+def evaluate_and_unlock_marks(user_id: str) -> list[str]:
+    """
+    Secret rules live here. This function can be called:
+    - after /finishhunt
+    - after /giveup
+    - whenever user runs /myhuntingmarks
+    so it supports retroactive unlocks naturally.
+    """
+    newly = []
+
+    total_completed = get_total_completed_hunts(user_id)
+    total_abandoned = get_total_abandoned_hunts(user_id)
+
+    now = datetime.utcnow()
+    # current month in UTC (fine for “calendar month” unless you want local time)
+    month_completed = get_completed_in_month(user_id, now.year, now.month)
+
+    next10_count = get_next10_completed_count(user_id)
+    az_count = get_az_completed_count(user_id)
+
+    months_with_completions = get_months_with_any_completion(user_id)
+    weekly_streak = get_longest_weekly_streak(user_id)
+
+    # --- Public marks ---
+    if total_completed >= 1:
+        if unlock_mark(user_id, "MARK_FIRST_BLOOD"):
+            newly.append("MARK_FIRST_BLOOD")
+
+    if total_completed >= 50:
+        if unlock_mark(user_id, "MARK_50"):
+            newly.append("MARK_50")
+
+    if total_completed >= 100:
+        if unlock_mark(user_id, "MARK_100"):
+            newly.append("MARK_100")
+
+    if total_completed >= 150:
+        if unlock_mark(user_id, "MARK_150"):
+            newly.append("MARK_150")
+
+    if month_completed >= 10:
+        if unlock_mark(user_id, "MARK_FOCUSED_MONTH"):
+            newly.append("MARK_FOCUSED_MONTH")
+
+    if next10_count >= 1:
+        if unlock_mark(user_id, "MARK_NEXT10"):
+            newly.append("MARK_NEXT10")
+
+    if az_count >= 1:
+        if unlock_mark(user_id, "MARK_AZ"):
+            newly.append("MARK_AZ")
+
+    # “Relentless” – stick with it over time (example: 6 distinct months)
+    if months_with_completions >= 6:
+        if unlock_mark(user_id, "MARK_RELENTLESS"):
+            newly.append("MARK_RELENTLESS")
+
+    # “Long Hunt” – example: 8-week streak
+    if weekly_streak >= 8:
+        if unlock_mark(user_id, "MARK_LONG_HUNT"):
+            newly.append("MARK_LONG_HUNT")
+
+    # “Haven Touched” – composite prestige (example)
+    # (This one is secret by design; users just see it appear eventually.)
+    if (
+        total_completed >= 100
+        and next10_count >= 1
+        and az_count >= 1
+        and months_with_completions >= 6
+    ):
+        if unlock_mark(user_id, "MARK_HAVEN_TOUCHED"):
+            newly.append("MARK_HAVEN_TOUCHED")
+
+    # --- Hidden mark (negative behaviour / spice) ---
+    # Example: abandon 20+ hunts
+    if total_abandoned >= 20:
+        if unlock_mark(user_id, "MARK_BROKEN_OATH"):
+            newly.append("MARK_BROKEN_OATH")
+
+    return newly
+
+MARK_SLOTS = {
+    0: (120, 140),
+    1: (320, 140),
+    2: (520, 140),
+    3: (720, 140),
+    4: (120, 340),
+    5: (320, 340),
+    6: (520, 340),
+    7: (720, 340),
+    8: (220, 540),
+    9: (620, 540),
+    10: (420, 540),  # hidden mark slot (example placement)
+}
+
+from PIL import Image, ImageDraw, ImageFont
+import os
+
+RES_MARKS_DIR = os.path.join("resources", "marks")
+
+def build_hunting_marks_board(unlocked_keys: list[str]) -> str:
+    board_path = os.path.join(RES_MARKS_DIR, "board.png")
+    if not os.path.exists(board_path):
+        raise FileNotFoundError("Missing resources/marks/board.png")
+
+    board = Image.open(board_path).convert("RGBA")
+    draw = ImageDraw.Draw(board)
+
+    # If nothing unlocked, add the single line of text
+    if not unlocked_keys:
+        msg = "Your marks are earned through dedication, not disclosure."
+        # Pick a font you already ship, or use a default
+        font_path = os.path.join("resources", "fonts", "Cinzel-Regular.ttf")
+        font = ImageFont.truetype(font_path, 34) if os.path.exists(font_path) else ImageFont.load_default()
+
+        # center it
+        w, h = board.size
+        tw, th = draw.textbbox((0, 0), msg, font=font)[2:]
+        x = (w - tw) // 2
+        y = h - 120
+        # subtle outline for readability
+        for ox, oy in [(-2,0),(2,0),(0,-2),(0,2)]:
+            draw.text((x+ox, y+oy), msg, font=font, fill="black")
+        draw.text((x, y), msg, font=font, fill="white")
+    else:
+        # Draw unlocked badges
+        # Load slot indexes for each key
+        c.execute("SELECT key, slot_index FROM hunting_marks")
+        slot_map = {k: i for (k, i) in c.fetchall()}
+
+        for key in unlocked_keys:
+            slot = slot_map.get(key)
+            if slot is None:
+                continue
+            pos = MARK_SLOTS.get(slot)
+            if not pos:
+                continue
+
+            badge_path = os.path.join(RES_MARKS_DIR, f"{key}.png")
+            if not os.path.exists(badge_path):
+                # If badge missing, just skip (so you can add art later)
+                continue
+
+            badge = Image.open(badge_path).convert("RGBA")
+            board.alpha_composite(badge, dest=pos)
+
+    out_path = os.path.join("temp", f"hunting_marks_{os.urandom(6).hex()}.png")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    board.save(out_path, "PNG")
+    return out_path
+
+#@bot.tree.command(name="myhuntingmarks", description="View your Marks of the Hunt.")
+#async def my_hunting_marks(interaction: discord.Interaction):
+#    user_id = str(interaction.user.id)
+#
+#    await interaction.response.defer(ephemeral=True)
+#
+#    # retroactive + current evaluation
+#    evaluate_and_unlock_marks(user_id)
+#
+#    c.execute("""
+#        SELECT key
+#        FROM user_hunting_marks
+#        WHERE user_id = ?
+#    """, (user_id,))
+#    unlocked = [r[0] for r in c.fetchall()]
+#
+#    try:
+#        img_path = build_hunting_marks_board(unlocked)
+#    except Exception as e:
+#        await interaction.followup.send(f"Error generating marks board: {e}", ephemeral=True)
+#        return
+#
+#    await interaction.followup.send(
+#        file=discord.File(img_path),
+#        ephemeral=True
+#    )
+#
+#    try:
+#        os.remove(img_path)
+#    except OSError:
+#        pass
 
 
 # Run the bot
