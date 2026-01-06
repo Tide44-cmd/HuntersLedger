@@ -762,10 +762,9 @@ async def my_solo_hunts(interaction: discord.Interaction):
 
     # Build formatted lines exactly like you want
     ip_lines = ["In Progress:"] + (in_progress if in_progress else ["(none)"])
-    ns_lines = ["", "", "Not Started:"] + (not_started if not_started else ["(none)"])
+    ns_lines = ["Not Started:"] + (not_started if not_started else ["(none)"])
 
-    # Convert to one list of lines so we can paginate
-    all_lines = ["", ""] + ip_lines + ["", ""] + ns_lines
+    all_lines = [""] + ip_lines + [""] + ns_lines
 
     # Paginate while preserving readability
     pages = []
@@ -775,7 +774,7 @@ async def my_solo_hunts(interaction: discord.Interaction):
         add = (line + "\n")
         if len(current) + len(add) > max_chars:
             pages.append(current.rstrip())
-            current = header + "\n\n" + add
+            current = header + "\n" + add
         else:
             current += add
     if current.strip():
