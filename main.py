@@ -1059,7 +1059,7 @@ def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
 
     if section == "fun":
         e.title = "Fun"
-        e.description = "• Coming soon 😄 (we can add Ledger-specific fun commands here)"
+        e.description = "• Coming soon 😄"
         return e
 
     if section == "admin" and is_admin:
@@ -1484,32 +1484,44 @@ async def reset_next10(interaction: discord.Interaction):
 
 import string
 
-def pick_game_for_letter(user_id: str, letter: str) -> str | None:
-    # Prefer not started/in progress first, then anything else
-    like = f"{letter}%"
-    c.execute('''
-        SELECT game_name
-        FROM solo_backlogs
-        WHERE user_id = ?
-          AND game_name LIKE ? COLLATE NOCASE
-          AND status IN ("not started", "in progress")
-        ORDER BY RANDOM()
-        LIMIT 1
-    ''', (user_id, like))
-    row = c.fetchone()
-    if row:
-        return row[0]
+def normalise_title_for_az(title: str) -> str:
+    """
+    Normalises a game title for A–Z challenges by removing common
+    leading articles like 'The ' and 'A '.
+    """
+    if not title:
+        return title
 
+    t = title.strip()
+
+    for prefix in ("the ", "a "):
+        if t.lower().startswith(prefix):
+            return t[len(prefix):].lstrip()
+
+    return t
+
+
+def pick_game_for_letter(user_id: str, letter: str) -> str | None:
+    letter = letter.upper()
+
+    # Only eligible games (not started / in progress)
     c.execute('''
         SELECT game_name
         FROM solo_backlogs
         WHERE user_id = ?
-          AND game_name LIKE ? COLLATE NOCASE
-        ORDER BY RANDOM()
-        LIMIT 1
-    ''', (user_id, like))
-    row = c.fetchone()
-    return row[0] if row else None
+          AND status IN ("not started", "in progress")
+    ''', (user_id,))
+
+    candidates = []
+    for (game_name,) in c.fetchall():
+        normalised = normalise_title_for_az(game_name)
+        if normalised and normalised[0].upper() == letter:
+            candidates.append(game_name)
+
+    if not candidates:
+        return None
+
+    return random.choice(candidates)
 
 
 @bot.tree.command(name="azhunts", description="Create (if needed) and view your A–Z hunts list.")
