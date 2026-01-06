@@ -1344,49 +1344,112 @@ async def generate_completion_banner(game_name, user_name, completion_date, avat
 
 # ==== Discord Slash Command ====
 @bot.tree.command(name="generatecard", description="Generate a completion card for a finished game.")
+@app_commands.describe(
+    game_name="Pick a game you've completed (autocomplete)",
+    genre="Optional: pick a theme (autocomplete)"
+)
 async def generate_card(interaction: discord.Interaction, game_name: str, genre: str = None):
     user_id = str(interaction.user.id)
     user_name = interaction.user.display_name
     avatar_url = interaction.user.display_avatar.url
 
+    # Validate/normalise genre
+    genre_clean = None
+    if genre:
+        genre_clean = genre.strip().lower()
+        if genre_clean not in ALLOWED_GENRES:
+            await interaction.response.send_message(
+                "That genre isn't available.\n"
+                f"Available genres: {', '.join(sorted(ALLOWED_GENRES))}",
+                ephemeral=True
+            )
+            return
+
     await interaction.response.defer()
 
+    # Case-insensitive lookup + ensure completed
     c.execute("""
-        SELECT completion_date 
-        FROM solo_backlogs 
-        WHERE user_id = ? AND game_name = ? AND status = 'completed'
+        SELECT completion_date
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND LOWER(game_name) = LOWER(?)
+          AND status = 'completed'
+        LIMIT 1
     """, (user_id, game_name))
-    
-    result = c.fetchone()
-    if not result:
-        await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
+
+    row = c.fetchone()
+    if not row:
+        await interaction.followup.send(
+            f"You have not completed '{game_name}', so a card cannot be generated.",
+            ephemeral=True
+        )
         return
 
-    completion_date = datetime.strptime(result[0], "%Y-%m-%d")
-    date_str = completion_date.strftime("%d %b %Y").lstrip("0")
-    banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
+    raw_date = row[0]
+
+    # completion_date can be NULL if older entries existed before you started storing dates
+    # If it's NULL, just show "Completed" without a date
+    if raw_date:
+        try:
+            # Stored as YYYY-MM-DD via DATE("now")
+            dt = datetime.strptime(raw_date, "%Y-%m-%d")
+            # Windows-safe (avoid %-d)
+            date_str = dt.strftime("%d %b %Y").lstrip("0")
+        except Exception:
+            # Fallback: show whatever is stored
+            date_str = str(raw_date)
+    else:
+        date_str = "Completed"
+
+    # IMPORTANT: pass date_str (string), not the datetime object
+    banner_path = await generate_completion_banner(
+        game_name=game_name,
+        user_name=user_name,
+        completion_date=date_str,
+        avatar_url=avatar_url,
+        genre=genre_clean
+    )
 
     if banner_path:
         await interaction.followup.send(
             f"Here is your completion card, {interaction.user.mention}! 🎉",
             file=discord.File(banner_path)
         )
-        os.remove(banner_path)
+        try:
+            os.remove(banner_path)
+        except OSError:
+            pass
     else:
-        await interaction.followup.send("Error generating the completion card. Please try again later.")
+        await interaction.followup.send(
+            "Error generating the completion card. Please try again later.",
+            ephemeral=True
+        )
 
+
+# ---- Autocomplete: completed games, most recent first ----
 @generate_card.autocomplete("game_name")
-async def generatecard_autocomplete(interaction: discord.Interaction, current: str):
+async def generatecard_game_autocomplete(interaction: discord.Interaction, current: str):
     user_id = str(interaction.user.id)
     like = f"%{current}%"
     c.execute('''
         SELECT game_name
         FROM solo_backlogs
-        WHERE user_id = ? AND status = "completed" AND game_name LIKE ? COLLATE NOCASE
-        ORDER BY completion_date DESC, game_name COLLATE NOCASE ASC
+        WHERE user_id = ?
+          AND status = "completed"
+          AND game_name LIKE ? COLLATE NOCASE
+        ORDER BY completion_date IS NULL, completion_date DESC, game_name COLLATE NOCASE ASC
         LIMIT 25
     ''', (user_id, like))
     return [app_commands.Choice(name=r[0], value=r[0]) for r in c.fetchall()]
+
+
+# ---- Autocomplete: genre "autoselect" ----
+@generate_card.autocomplete("genre")
+async def generatecard_genre_autocomplete(interaction: discord.Interaction, current: str):
+    cur = (current or "").strip().lower()
+    options = sorted(ALLOWED_GENRES)
+    filtered = [g for g in options if cur in g]
+    return [app_commands.Choice(name=g, value=g) for g in filtered[:25]]
 
 # Test image generate End
 @bot.tree.command(name="mynext10", description="Create (if needed) and view your Next 10 hunts challenge list.")
