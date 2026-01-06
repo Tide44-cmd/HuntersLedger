@@ -4,7 +4,7 @@ from discord import Interaction
 from discord import ButtonStyle
 from discord.ui import Button, View
 from discord import app_commands
-from discord import Embed, Color, app_commands
+from discord import Embed, Color
 import sqlite3
 import os
 import time
@@ -64,50 +64,50 @@ c.execute('''CREATE TABLE IF NOT EXISTS solo_backlogs (
 
 # --- Challenge tables (Next10 / A-Z Hunts) ---
   
-  c.execute('''
-  CREATE TABLE IF NOT EXISTS next10_lists (
-      user_id TEXT PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-  ''')
-  
-  c.execute('''
-  CREATE TABLE IF NOT EXISTS next10_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      game_name TEXT NOT NULL,
-      completed INTEGER DEFAULT 0,
-      completed_at TIMESTAMP,
-      UNIQUE(user_id, game_name)
-  )
-  ''')
-  
-  c.execute('''
-  CREATE TABLE IF NOT EXISTS az_lists (
-      user_id TEXT PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-  ''')
-  
-  c.execute('''
-  CREATE TABLE IF NOT EXISTS az_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      letter TEXT NOT NULL,
-      game_name TEXT,                 -- NULL means NA
-      completed INTEGER DEFAULT 0,
-      completed_at TIMESTAMP,
-      UNIQUE(user_id, letter)
-  )
-  ''')
-  
-  c.execute('''
-  CREATE TABLE IF NOT EXISTS challenge_stats (
-      user_id TEXT PRIMARY KEY,
-      next10_completed_count INTEGER DEFAULT 0,
-      az_completed_count INTEGER DEFAULT 0
-  )
-  ''')
+c.execute('''
+CREATE TABLE IF NOT EXISTS next10_lists (
+    user_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS next10_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    game_name TEXT NOT NULL,
+    completed INTEGER DEFAULT 0,
+    completed_at TIMESTAMP,
+    UNIQUE(user_id, game_name)
+)
+''')
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS az_lists (
+    user_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS az_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    letter TEXT NOT NULL,
+    game_name TEXT,                 -- NULL means NA
+    completed INTEGER DEFAULT 0,
+    completed_at TIMESTAMP,
+    UNIQUE(user_id, letter)
+)
+''')
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS challenge_stats (
+    user_id TEXT PRIMARY KEY,
+    next10_completed_count INTEGER DEFAULT 0,
+    az_completed_count INTEGER DEFAULT 0
+)
+''')
 conn.commit()
 
 # Bot setup
@@ -1265,18 +1265,7 @@ def download_image(url, save_path):
     return None
 
 # ==== Banner Generation ====
-@generate_card.autocomplete("game_name")
-async def generatecard_autocomplete(interaction: discord.Interaction, current: str):
-    user_id = str(interaction.user.id)
-    like = f"%{current}%"
-    c.execute('''
-        SELECT game_name
-        FROM solo_backlogs
-        WHERE user_id = ? AND status = "completed" AND game_name LIKE ? COLLATE NOCASE
-        ORDER BY completion_date DESC, game_name COLLATE NOCASE ASC
-        LIMIT 25
-    ''', (user_id, like))
-    return [app_commands.Choice(name=r[0], value=r[0]) for r in c.fetchall()]
+
 
 ALLOWED_GENRES = {"fps", "horror", "racing", "rpg", "strategy"}
 
@@ -1373,7 +1362,8 @@ async def generate_card(interaction: discord.Interaction, game_name: str, genre:
         await interaction.followup.send(f"You have not completed '{game_name}', so a card cannot be generated.")
         return
 
-    completion_date = datetime.strptime(result[0], "%Y-%m-%d").strftime("%-d %b %Y")
+    completion_date = datetime.strptime(result[0], "%Y-%m-%d")
+    date_str = completion_date.strftime("%d %b %Y").lstrip("0")
     banner_path = await generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre)
 
     if banner_path:
@@ -1385,6 +1375,18 @@ async def generate_card(interaction: discord.Interaction, game_name: str, genre:
     else:
         await interaction.followup.send("Error generating the completion card. Please try again later.")
 
+@generate_card.autocomplete("game_name")
+async def generatecard_autocomplete(interaction: discord.Interaction, current: str):
+    user_id = str(interaction.user.id)
+    like = f"%{current}%"
+    c.execute('''
+        SELECT game_name
+        FROM solo_backlogs
+        WHERE user_id = ? AND status = "completed" AND game_name LIKE ? COLLATE NOCASE
+        ORDER BY completion_date DESC, game_name COLLATE NOCASE ASC
+        LIMIT 25
+    ''', (user_id, like))
+    return [app_commands.Choice(name=r[0], value=r[0]) for r in c.fetchall()]
 
 # Test image generate End
 @bot.tree.command(name="mynext10", description="Create (if needed) and view your Next 10 hunts challenge list.")
