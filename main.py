@@ -18,8 +18,6 @@ import re
 import asyncio
 
 
-
-
 # Load environment variables
 load_dotenv()
 # Track the bot's start time
@@ -63,6 +61,53 @@ c.execute('''CREATE TABLE IF NOT EXISTS solo_backlogs (
                 rating INTEGER CHECK(rating BETWEEN 1 AND 5),
                 comments TEXT
             )''')
+
+# --- Challenge tables (Next10 / A-Z Hunts) ---
+  
+  c.execute('''
+  CREATE TABLE IF NOT EXISTS next10_lists (
+      user_id TEXT PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+  ''')
+  
+  c.execute('''
+  CREATE TABLE IF NOT EXISTS next10_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      game_name TEXT NOT NULL,
+      completed INTEGER DEFAULT 0,
+      completed_at TIMESTAMP,
+      UNIQUE(user_id, game_name)
+  )
+  ''')
+  
+  c.execute('''
+  CREATE TABLE IF NOT EXISTS az_lists (
+      user_id TEXT PRIMARY KEY,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+  ''')
+  
+  c.execute('''
+  CREATE TABLE IF NOT EXISTS az_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      letter TEXT NOT NULL,
+      game_name TEXT,                 -- NULL means NA
+      completed INTEGER DEFAULT 0,
+      completed_at TIMESTAMP,
+      UNIQUE(user_id, letter)
+  )
+  ''')
+  
+  c.execute('''
+  CREATE TABLE IF NOT EXISTS challenge_stats (
+      user_id TEXT PRIMARY KEY,
+      next10_completed_count INTEGER DEFAULT 0,
+      az_completed_count INTEGER DEFAULT 0
+  )
+  ''')
 conn.commit()
 
 # Bot setup
@@ -327,6 +372,20 @@ class MassHuntsModal(discord.ui.Modal, title="Mass add solo hunts"):
             ephemeral=True
         )
 
+def is_completed_for_user(user_id: str, game_name: str) -> bool:
+    c.execute('''
+        SELECT 1 FROM solo_backlogs
+        WHERE user_id = ? AND LOWER(game_name) = LOWER(?) AND status = "completed"
+        LIMIT 1
+    ''', (user_id, game_name))
+    return c.fetchone() is not None
+
+def strike_if_done(user_id: str, game_name: str) -> str:
+    return f"~~{game_name}~~ ✅" if is_completed_for_user(user_id, game_name) else game_name
+
+def ensure_challenge_stats_row(user_id: str):
+    c.execute("INSERT OR IGNORE INTO challenge_stats (user_id) VALUES (?)", (user_id,))
+    conn.commit()
 
   
 # Command: Show all tracked hunts
@@ -771,21 +830,96 @@ async def new_mass_hunts(interaction: discord.Interaction):
 
 
 # Command: /myfinishedhunts
-@bot.tree.command(name="myfinishedhunts", description="Show completed games, either all-time or for a specific month and year.")
+class PagedTextView(discord.ui.View):
+    def __init__(self, pages: list[str], title: str, invoker_id: int):
+        super().__init__(timeout=300)
+        self.pages = pages
+        self.title = title
+        self.invoker_id = invoker_id
+        self.page = 0
+        self._update_buttons()
+
+    def _update_buttons(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = False
+        self.children[0].disabled = self.page == 0
+        self.children[1].disabled = self.page >= (len(self.pages) - 1)
+
+    def make_embed(self) -> discord.Embed:
+        e = discord.Embed(title=self.title, description=self.pages[self.page], color=0x2b2d31)
+        e.set_footer(text=f"Page {self.page+1}/{len(self.pages)}")
+        return e
+
+    async def _gate(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message("Only the person who ran the command can use these buttons.", ephemeral=True)
+            return True
+        return False
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._gate(interaction):
+            return
+        self.page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await self._gate(interaction):
+            return
+        self.page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+
+def chunk_lines(lines: list[str], max_chars: int = 1500) -> list[str]:
+    pages = []
+    buf = ""
+    for line in lines:
+        if len(buf) + len(line) + 1 > max_chars:
+            pages.append(buf.rstrip())
+            buf = ""
+        buf += line + "\n"
+    if buf.strip():
+        pages.append(buf.rstrip())
+    return pages or ["(no entries)"]
+
+
+@bot.tree.command(name="myfinishedhunts", description="Show your completed solo hunts (optional month/year).")
 async def my_finished_hunts(interaction: discord.Interaction, month: int = None, year: int = None):
-    query = 'SELECT game_name, completion_date FROM solo_backlogs WHERE user_id = ? AND status = "completed"'
-    params = [interaction.user.id]
+    user_id = str(interaction.user.id)
+
+    query = '''
+        SELECT game_name, completion_date
+        FROM solo_backlogs
+        WHERE user_id = ? AND status = "completed"
+    '''
+    params = [user_id]
+
     if month and year:
         query += ' AND strftime("%m", completion_date) = ? AND strftime("%Y", completion_date) = ?'
         params.extend([f"{int(month):02}", str(year)])
-    query += ' ORDER BY game_name ASC'
+
+    query += ' ORDER BY completion_date DESC, game_name COLLATE NOCASE ASC'
+
     c.execute(query, tuple(params))
-    games = c.fetchall()
-    if games:
-        response = "\n".join([f"{game[0]} - Completed on {game[1]}" for game in games])
-        await interaction.response.send_message(f"Your completed games:\n{response}")
-    else:
-        await interaction.response.send_message("No completed games found for the specified period.")
+    rows = c.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("No completed games found for that period.", ephemeral=True)
+        return
+
+    lines = [f"• **{name}** — {date}" for (name, date) in rows]
+    pages = chunk_lines(lines)
+
+    title = "✅ My Finished Hunts"
+    if month and year:
+        title += f" — {int(month):02}/{year}"
+
+    view = PagedTextView(pages, title, interaction.user.id)
+    await interaction.response.send_message(embed=view.make_embed(), view=view, ephemeral=True)
 
 # Command: /givemeahunt
 @bot.tree.command(name="givemeahunt", description="Randomly select a hunt from your backlog and set it to 'in progress.'")
@@ -824,42 +958,129 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"No feedback found for '{game_name}'.")
 
 # Command: Displays a list of all available commands
-@bot.tree.command(name="help", description="Displays a list of all available commands.")
+class HelpView(discord.ui.View):
+    def __init__(self, is_admin: bool):
+        super().__init__(timeout=300)
+        self.is_admin = is_admin
+
+        self.add_item(self.SectionButton("Quick Start", "quick"))
+        self.add_item(self.SectionButton("Co-op Hunts", "coop"))
+        self.add_item(self.SectionButton("Solo Hunts", "solo"))
+
+        self.add_item(self.SectionButton("Challenges", "challenges", row=1))
+        self.add_item(self.SectionButton("Cards", "cards", row=1))
+        self.add_item(self.SectionButton("Info", "info", row=1))
+        self.add_item(self.SectionButton("Fun", "fun", row=1))
+        if is_admin:
+            self.add_item(self.SectionButton("Admin", "admin", row=1))
+
+    class SectionButton(discord.ui.Button):
+        def __init__(self, label: str, key: str, row: int = 0):
+            super().__init__(label=label, style=discord.ButtonStyle.primary, row=row)
+            self.key = key
+
+        async def callback(self, interaction: discord.Interaction):
+            embed = build_ledger_help_embed(self.key, is_admin=interaction.user.guild_permissions.administrator)
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed, view=self.view)
+            else:
+                await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
+    e = discord.Embed(color=0x2b2d31)
+    base_note = "Use the buttons below to switch sections."
+
+    if section == "quick":
+        e.title = "A Hunter’s Ledger — Help"
+        e.description = (
+            "**Quick Start**\n"
+            "1) Add solo hunts: `/newhunt` or `/newmasshunts`\n"
+            "2) View solo hunts: `/mysolohunts`\n"
+            "3) Start a hunt: `/starthunt`\n"
+            "4) Finish a hunt: `/finishhunt`\n"
+            "5) Want a random pick? `/givemeahunt`\n\n"
+            f"{base_note}"
+        )
+        return e
+
+    if section == "coop":
+        e.title = "Co-op / Multiplayer Hunts"
+        e.description = (
+            "• Track a co-op game: `/trackhunt \"name\"`\n"
+            "• Browse all tracked: `/showhunts`\n"
+            "• See who’s hunting: `/whohunts \"name\"`\n"
+            "• Join/Leave: `/joinhunt \"name\"` / `/leavehunt \"name\"`\n"
+            "• Call everyone for a game: `/callhunters \"name\" [message]`\n"
+        )
+        return e
+
+    if section == "solo":
+        e.title = "Solo Hunts"
+        e.description = (
+            "• Add: `/newhunt \"name\"`\n"
+            "• Mass add: `/newmasshunts`\n"
+            "• View active: `/mysolohunts`\n"
+            "• Start: `/starthunt \"name\"`\n"
+            "• Finish: `/finishhunt \"name\"`\n"
+            "• Drop: `/giveup \"name\"`\n"
+            "• Completed list: `/myfinishedhunts [month] [year]`\n"
+            "• Rate a completed hunt: `/ratehunt \"name\" 1-5 [comments]`\n"
+        )
+        return e
+
+    if section == "challenges":
+        e.title = "Challenges"
+        e.description = (
+            "• Your Next 10 list: `/mynext10`\n"
+            "• Reset Next 10: `/resetnext10`\n\n"
+            "• Your A–Z list: `/azhunts`\n"
+            "• Reset A–Z: `/resetaz`\n\n"
+            "_Lists auto-strike completed hunts based on your solo backlog._"
+        )
+        return e
+
+    if section == "cards":
+        e.title = "Completion Cards"
+        e.description = (
+            "• Generate a completion card:\n"
+            "  `/generatecard \"game\" [genre]`\n\n"
+            "Genres (current): `fps`, `horror`, `racing`, `rpg`, `strategy`\n"
+        )
+        return e
+
+    if section == "info":
+        e.title = "Bot Info"
+        e.description = (
+            "• Version: `/botversion`\n"
+            "• Health: `/healthcheck`\n"
+        )
+        return e
+
+    if section == "fun":
+        e.title = "Fun"
+        e.description = "• Coming soon 😄 (we can add Ledger-specific fun commands here)"
+        return e
+
+    if section == "admin" and is_admin:
+        e.title = "Admin"
+        e.description = (
+            "• Rename tracked hunt: `/changehunt \"old\" \"new\"`\n"
+            "• Remove tracked hunt: `/forgethunt \"name\"`\n"
+            "• Remove hunter from all: `/forgethunter @user`\n"
+        )
+        return e
+
+    return build_ledger_help_embed("quick", is_admin=is_admin)
+
+
+@bot.tree.command(name="help", description="Shows help sections with buttons.")
 async def help_command(interaction: discord.Interaction):
-    help_text = """
-**Haven's Helper Commands:**
+    is_admin = bool(interaction.guild and interaction.user.guild_permissions.administrator)
+    view = HelpView(is_admin=is_admin)
+    embed = build_ledger_help_embed("quick", is_admin=is_admin)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-- **Co-op and Multiplayer Backlog Management:**
-  - `/trackhunt "game name"` - Add a game to the co-op backlog.
-  - `/showhunts` - Show all games currently being managed.
-  - `/whohunts "game name"` - Show who is playing a specific game.
-  - `/joinhunt "game name"` - Add yourself to a game's player list.
-  - `/leavehunt "game name"` - Remove yourself from a game's player list.
-  - `/showmyhunts` - Show all games you are added to.
-  - `/showhunter @user` - Show all games a user is added to.
-  - `/mosthunted` - Show the top 5 most popular games.
-  - `/nothunted` - Show a list of games with no users signed up.
-  - `/changehunt "old name" "new name"` - Rename a game in the database.
-  - `/callhunters "game name"` - Tag all users signed up to a specific game.
-
-- **Solo Backlog Management:**
-  - `/newhunt "game name"` - Add a game to your solo backlog with the status "not started."
-  - `/mysolohunts` - Display your solo backlog with statuses ("not started" or "in progress").
-  - `/starthunt "game name"` - Set a game's status to "in progress."
-  - `/finishhunt "game name"` - Set a game's status to "completed."
-  - `/myfinishedhunts [Month] [Year]` - Show completed games, either all-time or for a specific month and year.
-  - `/givemeahunt` - Randomly select a hunt from your backlog and set it to "in progress."
-  - `/ratehunt "game name" "rating out of 5" [comments]` - Rate a completed game and leave optional comments.
-  - `/huntfeedback "game name"` - View feedback and ratings left by others for a specific game.
-  - `/generatecard "game name"` - Generate a completion card for a finished solo game.
-
-- **Bot Information:**
-  - `/botversion` - Displays the bot's version and additional information.
-  - `/healthcheck` - Check the bot's status and health.
-
-Need further assistance? Feel free to ask!
-"""
-    await interaction.response.send_message(help_text)
   
 # Command: Check who added a specific game (Admin only).
 @bot.tree.command(name="whoadded", description="Check who added a specific game (Admin only).")
@@ -931,37 +1152,6 @@ async def call_hunters_autocomplete(
         (like,)
     )
     return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
-async def call_hunters(interaction: Interaction, game_name: str, message: str | None = None):
-    # Case-insensitive game lookup
-    c.execute('SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)', (game_name,))
-    game = c.fetchone()
-    if not game:
-        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
-        return
-
-    game_id, canonical_name = game
-    c.execute('SELECT ug.user_id FROM user_games ug WHERE ug.game_id = ?', (game_id,))
-    users = c.fetchall()
-
-    if not users:
-        await interaction.response.send_message(f"No hunters are signed up for '{canonical_name}'.", ephemeral=True)
-        return
-
-    mentions = " ".join([f"<@{user[0]}>" for user in users])
-    extra = ""
-    if message and message.strip():
-        extra = f"\n\n{interaction.user.mention} says\n> {message.strip()}"
-
-    await interaction.response.send_message(
-        f"Calling all hunters for '{canonical_name}':\n{mentions}{extra}"
-    )
-
-
-    if users:
-        mentions = " ".join([f"<@{user[0]}>" for user in users])
-        await interaction.response.send_message(f"{message}\n\n{mentions}")
-    else:
-        await interaction.response.send_message("No users are currently signed up for any games.")
 
 # Command: Show bot version and information
 @bot.tree.command(name="botversion", description="Show bot version and additional information")
@@ -996,43 +1186,6 @@ async def healthcheck(interaction: Interaction):
     
     await interaction.response.send_message(health_report)
   
-# Command: Progress Graph
-@bot.tree.command(name="myprogressgraph", description="Visualize your solo backlog status in a graph (mobile friendly PNG).")
-async def my_progress_graph(interaction: discord.Interaction):
-    import pygal
-    import io
-    import cairosvg
-
-    user_id = str(interaction.user.id)
-    c.execute('SELECT status, COUNT(*) FROM solo_backlogs WHERE user_id = ? GROUP BY status', (user_id,))
-    data = c.fetchall()
-
-    if not data:
-        await interaction.response.send_message("Your solo backlog is empty. Add games to see progress graphs.")
-        return
-
-    # Defer the interaction (prevent Discord from timing out)
-    await interaction.response.defer()
-
-    # Generate SVG using Pygal
-    pie_chart = pygal.Pie()
-    pie_chart.title = f"{interaction.user.name}'s Solo Backlog Progress"
-    for status, count in data:
-        pie_chart.add(status.capitalize(), count)
-
-    # Render SVG to bytes (in memory)
-    svg_data = pie_chart.render()
-
-    # Convert SVG to PNG using CairoSVG
-    png_buffer = io.BytesIO()
-    cairosvg.svg2png(bytestring=svg_data, write_to=png_buffer)
-    png_buffer.seek(0)  # Reset buffer before sending
-
-    # Send PNG file as a follow-up (since interaction is deferred)
-    await interaction.followup.send(
-        content=f"{interaction.user.mention}, here is your backlog progress graph:",
-        file=discord.File(png_buffer, filename="progress.png")
-    )
 
 # Test Image generate here
 # ==== Imports ====
@@ -1112,6 +1265,21 @@ def download_image(url, save_path):
     return None
 
 # ==== Banner Generation ====
+@generate_card.autocomplete("game_name")
+async def generatecard_autocomplete(interaction: discord.Interaction, current: str):
+    user_id = str(interaction.user.id)
+    like = f"%{current}%"
+    c.execute('''
+        SELECT game_name
+        FROM solo_backlogs
+        WHERE user_id = ? AND status = "completed" AND game_name LIKE ? COLLATE NOCASE
+        ORDER BY completion_date DESC, game_name COLLATE NOCASE ASC
+        LIMIT 25
+    ''', (user_id, like))
+    return [app_commands.Choice(name=r[0], value=r[0]) for r in c.fetchall()]
+
+ALLOWED_GENRES = {"fps", "horror", "racing", "rpg", "strategy"}
+
 async def generate_completion_banner(game_name, user_name, completion_date, avatar_url, genre=None):
     try:
         # Background image
@@ -1219,6 +1387,225 @@ async def generate_card(interaction: discord.Interaction, game_name: str, genre:
 
 
 # Test image generate End
+@bot.tree.command(name="mynext10", description="Create (if needed) and view your Next 10 hunts challenge list.")
+async def my_next10(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    ensure_challenge_stats_row(user_id)
+
+    # Does a list exist?
+    c.execute("SELECT 1 FROM next10_lists WHERE user_id = ?", (user_id,))
+    has_list = c.fetchone() is not None
+
+    if not has_list:
+        # Pull eligible games: not started or in progress
+        c.execute('''
+            SELECT game_name
+            FROM solo_backlogs
+            WHERE user_id = ? AND status IN ("not started", "in progress")
+        ''', (user_id,))
+        pool = [r[0] for r in c.fetchall()]
+        if len(pool) < 1:
+            await interaction.response.send_message(
+                "You don't have any solo hunts in **Not Started** or **In Progress** to build a Next 10 list.",
+                ephemeral=True
+            )
+            return
+
+        random.shuffle(pool)
+        picked = pool[:10]
+
+        c.execute("INSERT INTO next10_lists (user_id) VALUES (?)", (user_id,))
+        for g in picked:
+            c.execute(
+                "INSERT OR IGNORE INTO next10_items (user_id, game_name) VALUES (?, ?)",
+                (user_id, g)
+            )
+        conn.commit()
+
+    # Load list
+    c.execute('''
+        SELECT game_name
+        FROM next10_items
+        WHERE user_id = ?
+        ORDER BY id ASC
+    ''', (user_id,))
+    items = [r[0] for r in c.fetchall()]
+
+    if not items:
+        # Safety: list exists but items missing
+        await interaction.response.send_message(
+            "Your Next 10 list exists but is empty. Use `/resetnext10` then `/mynext10` to rebuild it.",
+            ephemeral=True
+        )
+        return
+
+    # Build display with strike-through if now completed
+    display_lines = [f"{i+1}. {strike_if_done(user_id, name)}" for i, name in enumerate(items)]
+    completed_now = sum(1 for name in items if is_completed_for_user(user_id, name))
+
+    # If all complete -> stamp + prompt reset
+    if completed_now == len(items):
+        c.execute('''
+            UPDATE challenge_stats
+            SET next10_completed_count = next10_completed_count + 1
+            WHERE user_id = ?
+        ''', (user_id,))
+        conn.commit()
+
+        c.execute("SELECT next10_completed_count FROM challenge_stats WHERE user_id = ?", (user_id,))
+        count = c.fetchone()[0]
+
+        msg = (
+            f"🏁 **Next 10 complete!**\n"
+            f"You've completed your Next10 list **{count}** time(s).\n\n"
+            f"Run `/resetnext10` to generate a fresh list."
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    header = f"🎯 **{interaction.user.display_name}'s Next 10** — {completed_now}/10 completed"
+    await _send_long(interaction, header, display_lines)
+
+
+@bot.tree.command(name="resetnext10", description="Delete your current Next 10 list so you can generate a new one.")
+async def reset_next10(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+
+    c.execute("DELETE FROM next10_items WHERE user_id = ?", (user_id,))
+    c.execute("DELETE FROM next10_lists WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+    await interaction.response.send_message(
+        "✅ Your Next 10 list has been cleared. Run `/mynext10` to generate a new one.",
+        ephemeral=True
+    )
+
+import string
+
+def pick_game_for_letter(user_id: str, letter: str) -> str | None:
+    # Prefer not started/in progress first, then anything else
+    like = f"{letter}%"
+    c.execute('''
+        SELECT game_name
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND game_name LIKE ? COLLATE NOCASE
+          AND status IN ("not started", "in progress")
+        ORDER BY RANDOM()
+        LIMIT 1
+    ''', (user_id, like))
+    row = c.fetchone()
+    if row:
+        return row[0]
+
+    c.execute('''
+        SELECT game_name
+        FROM solo_backlogs
+        WHERE user_id = ?
+          AND game_name LIKE ? COLLATE NOCASE
+        ORDER BY RANDOM()
+        LIMIT 1
+    ''', (user_id, like))
+    row = c.fetchone()
+    return row[0] if row else None
+
+
+@bot.tree.command(name="azhunts", description="Create (if needed) and view your A–Z hunts list.")
+async def az_hunts(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    ensure_challenge_stats_row(user_id)
+
+    c.execute("SELECT 1 FROM az_lists WHERE user_id = ?", (user_id,))
+    has_list = c.fetchone() is not None
+
+    if not has_list:
+        c.execute("INSERT INTO az_lists (user_id) VALUES (?)", (user_id,))
+        for letter in string.ascii_uppercase:
+            game = pick_game_for_letter(user_id, letter)
+            c.execute(
+                "INSERT OR REPLACE INTO az_items (user_id, letter, game_name) VALUES (?, ?, ?)",
+                (user_id, letter, game)  # game can be None => NA
+            )
+        conn.commit()
+    else:
+        # Try to populate any NAs
+        c.execute('''
+            SELECT letter
+            FROM az_items
+            WHERE user_id = ? AND (game_name IS NULL OR game_name = "")
+        ''', (user_id,))
+        na_letters = [r[0] for r in c.fetchall()]
+        changed = False
+        for letter in na_letters:
+            game = pick_game_for_letter(user_id, letter)
+            if game:
+                c.execute('''
+                    UPDATE az_items
+                    SET game_name = ?
+                    WHERE user_id = ? AND letter = ?
+                ''', (game, user_id, letter))
+                changed = True
+        if changed:
+            conn.commit()
+
+    # Load list A–Z
+    c.execute('''
+        SELECT letter, game_name
+        FROM az_items
+        WHERE user_id = ?
+        ORDER BY letter ASC
+    ''', (user_id,))
+    rows = c.fetchall()
+
+    lines = []
+    playable_total = 0
+    playable_done = 0
+
+    for letter, game_name in rows:
+        if not game_name:
+            lines.append(f"**{letter}:** NA")
+            continue
+
+        playable_total += 1
+        if is_completed_for_user(user_id, game_name):
+            playable_done += 1
+            lines.append(f"**{letter}:** ~~{game_name}~~ ✅")
+        else:
+            lines.append(f"**{letter}:** {game_name}")
+
+    if playable_total > 0 and playable_done == playable_total:
+        c.execute('''
+            UPDATE challenge_stats
+            SET az_completed_count = az_completed_count + 1
+            WHERE user_id = ?
+        ''', (user_id,))
+        conn.commit()
+
+        c.execute("SELECT az_completed_count FROM challenge_stats WHERE user_id = ?", (user_id,))
+        count = c.fetchone()[0]
+        await interaction.response.send_message(
+            f"🏁 **A–Z complete!** You’ve finished your A–Z list **{count}** time(s).\n"
+            f"Run `/resetaz` to generate a fresh A–Z list.",
+            ephemeral=True
+        )
+        return
+
+    header = f"🔤 **{interaction.user.display_name}'s A–Z Hunts** — {playable_done}/{playable_total} completed (excluding NA)"
+    await _send_long(interaction, header, lines)
+
+
+@bot.tree.command(name="resetaz", description="Delete your current A–Z list so you can generate a new one.")
+async def reset_az(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+
+    c.execute("DELETE FROM az_items WHERE user_id = ?", (user_id,))
+    c.execute("DELETE FROM az_lists WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+    await interaction.response.send_message(
+        "✅ Your A–Z list has been cleared. Run `/azhunts` to generate a new one.",
+        ephemeral=True
+    )
 
 
 # Run the bot
