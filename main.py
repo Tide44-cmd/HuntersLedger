@@ -758,11 +758,11 @@ async def my_solo_hunts(interaction: discord.Interaction):
     ns_count = len(not_started)
     total = ip_count + ns_count
 
-    header = f"Your solo hunts — In Progress: {ip_count} • Not Started: {ns_count} • Total: {total}"
+    header = f"**Your solo hunts — In Progress: {ip_count} • Not Started: {ns_count} • Total: {total}**"
 
     # Build formatted lines exactly like you want
-    ip_lines = ["In Progress:"] + (in_progress if in_progress else ["(none)"])
-    ns_lines = ["Not Started:"] + (not_started if not_started else ["(none)"])
+    ip_lines = ["**In Progress:**"] + (in_progress if in_progress else ["(none)"])
+    ns_lines = ["**Not Started:**"] + (not_started if not_started else ["(none)"])
 
     all_lines = [""] + ip_lines + [""] + ns_lines
 
