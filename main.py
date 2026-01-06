@@ -733,54 +733,61 @@ async def new_hunt(interaction: discord.Interaction, game_name: str):
     await interaction.response.send_message(f"Game '{game_name}' added to your solo backlog with status 'not started'.")
 
 
-@bot.tree.command(name="mysolohunts", description="Show your active solo hunts (paginated).")
+@bot.tree.command(name="mysolohunts", description="Show your solo hunts (In Progress + Not Started).")
 async def my_solo_hunts(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
 
+    # Fetch active hunts
     c.execute("""
         SELECT game_name, status
         FROM solo_backlogs
         WHERE user_id = ?
           AND status IN ("in progress", "not started")
-        ORDER BY
-            CASE status
-                WHEN "in progress" THEN 0
-                WHEN "not started" THEN 1
-            END,
-            game_name COLLATE NOCASE ASC
+        ORDER BY game_name COLLATE NOCASE ASC
     """, (user_id,))
-
     rows = c.fetchall()
 
     if not rows:
-        await interaction.response.send_message(
-            "You don't have any active solo hunts right now.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("You don't have any solo hunts yet.")
         return
 
-    lines = []
-    for name, status in rows:
-        if status == "in progress":
-            lines.append(f"▶ **{name}** _(In Progress)_")
+    in_progress = [name for (name, status) in rows if status == "in progress"]
+    not_started = [name for (name, status) in rows if status == "not started"]
+
+    ip_count = len(in_progress)
+    ns_count = len(not_started)
+    total = ip_count + ns_count
+
+    header = f"Your solo hunts — In Progress: {ip_count} • Not Started: {ns_count} • Total: {total}"
+
+    # Build formatted lines exactly like you want
+    ip_lines = ["In Progress:"] + (in_progress if in_progress else ["(none)"])
+    ns_lines = ["", "", "Not Started:"] + (not_started if not_started else ["(none)"])
+
+    # Convert to one list of lines so we can paginate
+    all_lines = ["", ""] + ip_lines + ["", ""] + ns_lines
+
+    # Paginate while preserving readability
+    pages = []
+    max_chars = 1500  # keep comfortably below Discord limits
+    current = header + "\n\n"
+    for line in all_lines:
+        add = (line + "\n")
+        if len(current) + len(add) > max_chars:
+            pages.append(current.rstrip())
+            current = header + "\n\n" + add
         else:
-            lines.append(f"• {name} _(Not Started)_")
+            current += add
+    if current.strip():
+        pages.append(current.rstrip())
 
-    pages = chunk_lines(lines)
+    # Build view + embed
+    title = f"🎯 {interaction.user.display_name}'s Solo Hunts"
+    view = PagedTextView(pages=pages, title=title, invoker_id=interaction.user.id)
 
-    title = f"🎯 {interaction.user.display_name}'s Active Solo Hunts"
+    # First page goes into embed description
+    await interaction.response.send_message(embed=view.make_embed(), view=view)
 
-    view = PagedTextView(
-        pages=pages,
-        title=title,
-        invoker_id=interaction.user.id
-    )
-
-    # ❗ NOT ephemeral
-    await interaction.response.send_message(
-        embed=view.make_embed(),
-        view=view
-    )
 
 
 
