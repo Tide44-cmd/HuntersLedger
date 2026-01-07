@@ -170,6 +170,23 @@ async def track_hunt(interaction: discord.Interaction, game_name: str):
         f"Game '{game_name}' has been added and you've been added to its hunters."
     )
 
+def log_command(
+    interaction: discord.Interaction,
+    command: str,
+    game_name: str | None = None,
+    extra: str | None = None
+):
+    user_display = str(interaction.user)            # e.g. Tide44#1234 (or new format)
+    user_id = str(interaction.user.id)             # Discord snowflake
+    location = "DM" if interaction.guild is None else f"GUILD:{interaction.guild.id}"
+
+    c.execute("""
+        INSERT INTO logs (user, command, game_name, user_id, location, extra)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_display, command, game_name, user_id, location, extra))
+    conn.commit()
+
+
 
 ## Command: Track a game with platform buttons
 #@bot.tree.command(name="trackhunt", description="Add a game to the list")
@@ -644,10 +661,27 @@ class ConfirmForgetView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if await self._not_invoker(interaction):
             return
-        # Remove all signups, then the game
+
+        # Count and remove all signups, then the game
+        c.execute("SELECT COUNT(*) FROM user_games WHERE game_id = ?", (self.game_id,))
+        links_before = int(c.fetchone()[0] or 0)
+
         c.execute("DELETE FROM user_games WHERE game_id = ?", (self.game_id,))
+        links_deleted = c.rowcount
+
         c.execute("DELETE FROM games WHERE id = ?", (self.game_id,))
+        game_deleted = c.rowcount
+
         conn.commit()
+
+        # ✅ Log the confirmed deletion
+        log_command(
+            interaction,
+            "forgethunt_OK_CONFIRMED",
+            game_name=self.canonical_name,
+            extra=f"game_id={self.game_id} links_before={links_before} links_deleted={links_deleted} game_deleted={game_deleted}"
+        )
+
         await interaction.response.edit_message(
             content=f"Removed '{self.canonical_name}' from the tracked hunts.", view=None
         )
@@ -656,16 +690,29 @@ class ConfirmForgetView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if await self._not_invoker(interaction):
             return
+
+        # (Optional but useful) log cancellations too
+        log_command(
+            interaction,
+            "forgethunt_CANCELLED",
+            game_name=self.canonical_name,
+            extra=f"game_id={self.game_id}"
+        )
+
         await interaction.response.edit_message(content="Cancelled. No changes made.", view=None)
 
 
-@bot.tree.command(name="forgethunt", description="Remove a game from the tracked list (deletes the game for everyone(Admin Only)).")
+
+@bot.tree.command(name="forgethunt",description="Remove a game from the tracked list (deletes the game for everyone(Admin Only)).")
 @app_commands.describe(game_name="Start typing to search...")
 async def forget_hunt(interaction: discord.Interaction, game_name: str):
+    requester_id = str(interaction.user.id)
+
     # Find the game (case-insensitive)
     c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
     game = c.fetchone()
     if not game:
+        log_command(interaction, "forgethunt_NOT_FOUND", game_name=game_name)
         await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
         return
 
@@ -674,25 +721,43 @@ async def forget_hunt(interaction: discord.Interaction, game_name: str):
     # Who's hunting?
     c.execute("SELECT user_id FROM user_games WHERE game_id = ?", (game_id,))
     hunters = [u[0] for u in c.fetchall()]
-    others_count = len([u for u in hunters if u != str(interaction.user.id)])
+    others_count = len([u for u in hunters if u != requester_id])
 
     # If the requester is the only hunter, remove immediately
     if others_count == 0:
         c.execute("DELETE FROM user_games WHERE game_id = ?", (game_id,))
+        links_deleted = c.rowcount
         c.execute("DELETE FROM games WHERE id = ?", (game_id,))
+        game_deleted = c.rowcount
         conn.commit()
+
+        log_command(
+            interaction,
+            "forgethunt_OK_ONLY_HUNTER",
+            game_name=canonical_name,
+            extra=f"game_id={game_id} links_deleted={links_deleted} game_deleted={game_deleted}"
+        )
+
         await interaction.response.send_message(
             f"Removed '{canonical_name}'. (You were the only hunter.)"
         )
         return
 
     # Otherwise, ask for confirmation
+    log_command(
+        interaction,
+        "forgethunt_CONFIRM_SHOWN",
+        game_name=canonical_name,
+        extra=f"game_id={game_id} others_count={others_count}"
+    )
+
     await interaction.response.send_message(
         f"Are you sure you want to remove '{canonical_name}'? "
         f"**{others_count}** other user(s) are still hunting this game.",
         view=ConfirmForgetView(interaction.user.id, game_id, canonical_name),
         ephemeral=True
     )
+
 
 @forget_hunt.autocomplete('game_name')
 async def forget_hunt_autocomplete(interaction: discord.Interaction, current: str):
@@ -2046,6 +2111,60 @@ def build_hunting_marks_board(unlocked_keys: list[str]) -> str:
 #        os.remove(img_path)
 #    except OSError:
 #        pass
+
+#Database backup
+TIDE44_ID = 420996360699904000
+
+def is_tide44(interaction: discord.Interaction) -> bool:
+    return interaction.user and interaction.user.id == TIDE44_ID
+
+import sqlite3
+import os
+from datetime import datetime
+DB_PATH = "hunters_ledger.db"
+
+def backup_database(db_path: str, backup_dir: str = "backups") -> str:
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(backup_dir, f"hunters_ledger_backup_{stamp}.sqlite")
+
+    # Use SQLite backup API (safe even if the bot is running)
+    src = sqlite3.connect(db_path)
+    dst = sqlite3.connect(backup_path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+    return backup_path
+
+@bot.tree.command(name="backupdb", description="Owner-only: Create a database backup on the host.")
+async def backupdb(interaction: discord.Interaction):
+    if not is_tide44(interaction):
+        await interaction.response.send_message("❌ This command is owner-only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        path = backup_database(DB_PATH, backup_dir="backups")
+
+        # If you added the new log columns, this will record DM/GUILD too
+        try:
+            log_command(interaction, "backupdb", extra=f"OK {path}")
+        except Exception:
+            # Don't fail backup if logging fails
+            pass
+
+        await interaction.followup.send(f"✅ Backup created:\n`{path}`", ephemeral=True)
+
+    except Exception as e:
+        try:
+            log_command(interaction, "backupdb", extra=f"FAILED {e}")
+        except Exception:
+            pass
+        await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
 
 
 # Run the bot
