@@ -2166,6 +2166,169 @@ async def backupdb(interaction: discord.Interaction):
             pass
         await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
 
+# synclists
+@bot.tree.command(
+    name="synclists",
+    description="Sync your Next10 and A–Z lists with your current solo backlog (removes games you've given up)."
+)
+async def synclists(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+
+    await interaction.response.defer(ephemeral=True)
+
+    # -------- Next10: remove entries that no longer exist in solo_backlogs --------
+    c.execute("""
+        SELECT game_name
+        FROM next10_items
+        WHERE user_id = ?
+    """, (user_id,))
+    next10_games = [r[0] for r in c.fetchall()]
+
+    removed_next10 = []
+    for g in next10_games:
+        c.execute("""
+            SELECT 1
+            FROM solo_backlogs
+            WHERE user_id = ?
+              AND LOWER(game_name) = LOWER(?)
+            LIMIT 1
+        """, (user_id, g))
+
+        if c.fetchone() is None:
+            c.execute("""
+                DELETE FROM next10_items
+                WHERE user_id = ?
+                  AND LOWER(game_name) = LOWER(?)
+            """, (user_id, g))
+            if c.rowcount:
+                removed_next10.append(g)
+
+    # -------- A-Z: null out letters whose game no longer exists --------
+    c.execute("""
+        SELECT letter, game_name
+        FROM az_items
+        WHERE user_id = ?
+        ORDER BY letter ASC
+    """, (user_id,))
+    az_rows = c.fetchall()
+
+    cleared_az = []
+    filled_az = []
+
+    for letter, game_name in az_rows:
+        if not game_name:
+            continue
+
+        c.execute("""
+            SELECT 1
+            FROM solo_backlogs
+            WHERE user_id = ?
+              AND LOWER(game_name) = LOWER(?)
+            LIMIT 1
+        """, (user_id, game_name))
+
+        if c.fetchone() is None:
+            c.execute("""
+                UPDATE az_items
+                SET game_name = NULL
+                WHERE user_id = ? AND letter = ?
+            """, (user_id, letter))
+            cleared_az.append(f"{letter} ({game_name})")
+
+    # -------- Repopulate NA letters --------
+    c.execute("""
+        SELECT letter
+        FROM az_items
+        WHERE user_id = ?
+          AND (game_name IS NULL OR game_name = "")
+        ORDER BY letter ASC
+    """, (user_id,))
+    na_letters = [r[0] for r in c.fetchall()]
+
+    for letter in na_letters:
+        game = pick_game_for_letter(user_id, letter)
+        if game:
+            c.execute("""
+                UPDATE az_items
+                SET game_name = ?
+                WHERE user_id = ? AND letter = ?
+            """, (game, user_id, letter))
+            filled_az.append(f"{letter} → {game}")
+
+    # -------- Refill Next10 up to 10 --------
+    c.execute("""
+        SELECT game_name
+        FROM next10_items
+        WHERE user_id = ?
+    """, (user_id,))
+    current_next10 = [r[0] for r in c.fetchall()]
+
+    slots_needed = 10 - len(current_next10)
+    added_next10 = []
+
+    if slots_needed > 0:
+        current_lower = [g.lower() for g in current_next10]
+
+        if current_lower:
+            placeholders = ",".join("?" for _ in current_lower)
+            query = f"""
+                SELECT game_name
+                FROM solo_backlogs
+                WHERE user_id = ?
+                  AND status != 'completed'
+                  AND LOWER(game_name) NOT IN ({placeholders})
+                ORDER BY RANDOM()
+                LIMIT ?
+            """
+            params = [user_id] + current_lower + [slots_needed]
+        else:
+            query = """
+                SELECT game_name
+                FROM solo_backlogs
+                WHERE user_id = ?
+                  AND status != 'completed'
+                ORDER BY RANDOM()
+                LIMIT ?
+            """
+            params = [user_id, slots_needed]
+
+        c.execute(query, params)
+        new_games = [r[0] for r in c.fetchall()]
+
+        for g in new_games:
+            c.execute("""
+                INSERT INTO next10_items (user_id, game_name)
+                VALUES (?, ?)
+            """, (user_id, g))
+            added_next10.append(g)
+
+    # Commit EVERYTHING (even if no refill happened)
+    conn.commit()
+
+    # -------- Response --------
+    parts = ["🧹 **Sync complete**"]
+
+    if removed_next10:
+        parts.append(f"**Next10:** removed {len(removed_next10)} invalid game(s): " + ", ".join(removed_next10))
+    else:
+        parts.append("**Next10:** no invalid games found ✅")
+
+    if added_next10:
+        parts.append(f"**Next10:** added {len(added_next10)} new game(s): " + ", ".join(added_next10))
+
+    if cleared_az:
+        parts.append(f"**A–Z:** cleared {len(cleared_az)} invalid letter(s): " + ", ".join(cleared_az))
+    else:
+        parts.append("**A–Z:** no invalid letters found ✅")
+
+    if filled_az:
+        parts.append("**A–Z:** refilled: " + ", ".join(filled_az))
+    else:
+        if cleared_az or na_letters:
+            parts.append("**A–Z:** no replacements available for some NA letters (that’s normal).")
+
+    await interaction.followup.send("\n".join(parts), ephemeral=True)
+
 
 # Run the bot
 bot.run(TOKEN)
