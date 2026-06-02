@@ -779,6 +779,133 @@ async def forget_hunter(interaction: Interaction, user: discord.User):
     await interaction.response.send_message(f"{user.mention} has been removed from all games.")
 
 
+def parse_discord_user_id(value: str) -> str | None:
+    value = (value or "").strip()
+    mention = re.fullmatch(r"<@!?(\d+)>", value)
+    if mention:
+        return mention.group(1)
+    if re.fullmatch(r"\d{15,25}", value):
+        return value
+    return None
+
+
+def is_interaction_admin(interaction: discord.Interaction) -> bool:
+    return bool(
+        interaction.guild
+        and getattr(interaction.user, "guild_permissions", None)
+        and interaction.user.guild_permissions.administrator
+    )
+
+
+# Command: Remove a user from one game (Admin Only)
+@bot.tree.command(name="removehunter", description="Remove a user from one hunt (Admin only)")
+@app_commands.describe(
+    game_name="Start typing to search...",
+    hunter="Select a hunter from the game, mention them, or paste their user ID"
+)
+async def remove_hunter(interaction: discord.Interaction, game_name: str, hunter: str):
+    if not is_interaction_admin(interaction):
+        await interaction.response.send_message("Only admins can remove another hunter from a hunt.", ephemeral=True)
+        return
+
+    c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
+    game = c.fetchone()
+    if not game:
+        await interaction.response.send_message(f"Game '{game_name}' not found.", ephemeral=True)
+        return
+
+    game_id, canonical_name = game
+    hunter_id = parse_discord_user_id(hunter)
+
+    if not hunter_id:
+        like = f"%{hunter}%"
+        c.execute(
+            """SELECT user_id, user_name
+               FROM user_games
+               WHERE game_id = ? AND user_name LIKE ? COLLATE NOCASE
+               ORDER BY user_name COLLATE NOCASE ASC
+               LIMIT 2""",
+            (game_id, like)
+        )
+        matches = c.fetchall()
+        if len(matches) == 1:
+            hunter_id = str(matches[0][0])
+        else:
+            await interaction.response.send_message(
+                "I couldn't identify that hunter uniquely. Select them from autocomplete or mention them directly.",
+                ephemeral=True
+            )
+            return
+
+    c.execute(
+        "SELECT user_name FROM user_games WHERE game_id = ? AND user_id = ?",
+        (game_id, hunter_id)
+    )
+    signup = c.fetchone()
+    if not signup:
+        await interaction.response.send_message(
+            f"<@{hunter_id}> is not signed up for '{canonical_name}'.",
+            ephemeral=True
+        )
+        return
+
+    c.execute("DELETE FROM user_games WHERE game_id = ? AND user_id = ?", (game_id, hunter_id))
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"Removed <@{hunter_id}> from the hunt for '{canonical_name}'."
+    )
+
+
+@remove_hunter.autocomplete("game_name")
+async def remove_hunter_game_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    c.execute(
+        "SELECT game_name FROM games WHERE game_name LIKE ? COLLATE NOCASE ORDER BY game_name ASC LIMIT 25",
+        (like,)
+    )
+    return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
+
+
+@remove_hunter.autocomplete("hunter")
+async def remove_hunter_user_autocomplete(interaction: discord.Interaction, current: str):
+    like = f"%{current}%"
+    selected_game = getattr(interaction.namespace, "game_name", None)
+
+    if selected_game:
+        c.execute("SELECT id FROM games WHERE LOWER(game_name) = LOWER(?)", (selected_game,))
+        game = c.fetchone()
+        if game:
+            c.execute(
+                """SELECT user_id, user_name
+                   FROM user_games
+                   WHERE game_id = ?
+                     AND (user_name LIKE ? COLLATE NOCASE OR user_id LIKE ?)
+                   ORDER BY user_name COLLATE NOCASE ASC
+                   LIMIT 25""",
+                (game[0], like, like)
+            )
+            rows = c.fetchall()
+            return [
+                app_commands.Choice(name=f"{row[1]} ({row[0]})"[:100], value=str(row[0]))
+                for row in rows
+            ]
+
+    c.execute(
+        """SELECT user_id, MIN(user_name)
+           FROM user_games
+           WHERE user_name LIKE ? COLLATE NOCASE OR user_id LIKE ?
+           GROUP BY user_id
+           ORDER BY MIN(user_name) COLLATE NOCASE ASC
+           LIMIT 25""",
+        (like, like)
+    )
+    return [
+        app_commands.Choice(name=f"{row[1]} ({row[0]})"[:100], value=str(row[0]))
+        for row in c.fetchall()
+    ]
+
+
 
 # Solo Backlog Management Commands
 
@@ -1021,7 +1148,7 @@ async def my_finished_hunts(interaction: discord.Interaction, month: int = None,
         title += f" — {int(month):02}/{year}"
 
     view = PagedTextView(pages, title, interaction.user.id)
-    await interaction.response.send_message(embed=view.make_embed(), view=view, ephemeral=True)
+    await interaction.response.send_message(embed=view.make_embed(), view=view)
 
 # Command: /givemeahunt
 @bot.tree.command(name="givemeahunt", description="Randomly select a hunt from your backlog and set it to 'in progress.'")
@@ -1169,6 +1296,7 @@ def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
         e.description = (
             "• Rename tracked hunt: `/changehunt \"old\" \"new\"`\n"
             "• Remove tracked hunt: `/forgethunt \"name\"`\n"
+            "• Remove hunter from one hunt: `/removehunter \"name\" hunter`\n"
             "• Remove hunter from all: `/forgethunter @user`\n"
         )
         return e
