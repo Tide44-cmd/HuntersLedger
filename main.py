@@ -429,12 +429,16 @@ def ensure_challenge_stats_row(user_id: str):
 @bot.tree.command(name="showhunts", description="Show all games currently being managed")
 async def show_hunts(interaction: discord.Interaction):
     c.execute("SELECT game_name FROM games ORDER BY game_name ASC")
-    games = c.fetchall()
-    if games:
-        game_list = "\n".join([game[0] for game in games])
-        await interaction.response.send_message(f"**Tracked Hunts:**\n{game_list}")
-    else:
+    games = [row[0] for row in c.fetchall()]
+    if not games:
         await interaction.response.send_message("No games are currently being tracked.")
+        return
+
+    lines = [f"- {game_name}" for game_name in games]
+    pages = chunk_lines(lines)
+    title = f"Tracked Hunts ({len(games)})"
+    view = PagedTextView(pages=pages, title=title, invoker_id=interaction.user.id)
+    await interaction.response.send_message(embed=view.make_embed(), view=view)
 
 ## Command: Show all tracked hunts
 #@bot.tree.command(name="showhunts", description="Show all games currently being managed")
