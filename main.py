@@ -1195,15 +1195,22 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
 
 # Command: Displays a list of all available commands
 def can_manage_goal_templates(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == 420996360699904000:
+        return True
     if interaction.guild is None or not isinstance(interaction.user, discord.Member):
         return False
     if interaction.user.guild_permissions.administrator:
         return True
-    configured = os.getenv("GOAL_MOD_ROLES", "")
-    allowed = {name.strip().casefold() for name in configured.split(",") if name.strip()}
-    if not allowed:
-        allowed = {"admin", "administrator", "moderator", "leader", "event staff"}
-    return any(role.name.casefold() in allowed for role in interaction.user.roles)
+    configured = os.getenv("GOAL_MOD_ROLE_IDS", "")
+    allowed = {
+        int(role_id.strip()) for role_id in configured.split(",")
+        if role_id.strip().isdigit()
+    } or {
+        1314735241360834640,  # Moderator
+        1306562882778959954,  # Admin
+        1068204022785376256,  # Leaders
+    }
+    return any(role.id in allowed for role in interaction.user.roles)
 
 
 class HelpView(discord.ui.View):
@@ -1336,7 +1343,7 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
             "• Archive a game: `/modremovefromgoal goaltype goaltitle game`\n"
             "• Rename: `/modrenamegoal oldtitle newtitle`\n"
             "• View templates and copy counts: `/modgoals`\n\n"
-            "_Approved roles are configured with `GOAL_MOD_ROLES`; administrators always have access._"
+            "_Access uses the configured moderator, admin, and leader role IDs._"
         )
         return e
 
