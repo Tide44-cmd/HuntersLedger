@@ -20,7 +20,12 @@ from discord.ext import commands
 
 DB_PATH = os.getenv("HUNTERS_LEDGER_DB", "hunters_ledger.db")
 GOAL_TYPES = ("series", "az", "genre")
-DEFAULT_MOD_ROLES = ("admin", "administrator", "moderator", "leader", "event staff")
+DEFAULT_MOD_ROLE_IDS = {
+    1314735241360834640,  # Moderator
+    1306562882778959954,  # Admin
+    1068204022785376256,  # Leaders
+}
+GOAL_OWNER_USER_ID = 420996360699904000
 
 
 def normalize_game_name(value: str) -> str:
@@ -305,15 +310,18 @@ class GoalSystem(commands.Cog):
         return re.sub(r"\s+", " ", (value or "").strip())[:100]
 
     def _is_mod(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == GOAL_OWNER_USER_ID:
+            return True
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             return False
         if interaction.user.guild_permissions.administrator:
             return True
-        configured = os.getenv("GOAL_MOD_ROLES", "")
-        allowed = {name.strip().casefold() for name in configured.split(",") if name.strip()}
-        if not allowed:
-            allowed = set(DEFAULT_MOD_ROLES)
-        return any(role.name.casefold() in allowed for role in interaction.user.roles)
+        configured = os.getenv("GOAL_MOD_ROLE_IDS", "")
+        allowed = {
+            int(role_id.strip()) for role_id in configured.split(",")
+            if role_id.strip().isdigit()
+        } or DEFAULT_MOD_ROLE_IDS
+        return any(role.id in allowed for role in interaction.user.roles)
 
     async def _require_mod(self, interaction: discord.Interaction) -> bool:
         if self._is_mod(interaction):
@@ -520,10 +528,12 @@ class GoalSystem(commands.Cog):
             return f"⬜ {name}{personal}"
         return f"❔ {name}{personal}"
 
-    async def _send_goal(self, interaction: discord.Interaction, goal: sqlite3.Row) -> None:
+    async def _send_goal(
+        self, interaction: discord.Interaction, goal: sqlite3.Row, *, ephemeral: bool = True
+    ) -> None:
         embeds, missing = self._goal_embeds(goal, interaction.user)
         view = AddMissingHuntsView(self, goal["id"], str(interaction.user.id)) if missing else None
-        await interaction.response.send_message(embeds=embeds, view=view, ephemeral=True)
+        await interaction.response.send_message(embeds=embeds, view=view, ephemeral=ephemeral)
 
     async def create_user_goal(self, interaction: discord.Interaction, goal_type: str, title: str, raw: str) -> None:
         items, skipped = parse_goal_items(raw, goal_type)
@@ -701,7 +711,7 @@ class GoalSystem(commands.Cog):
                 name = labels[goal_type] if index == 0 else f"{labels[goal_type]} (continued)"
                 embed.add_field(name=name, value="\n".join(page), inline=False)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @app_commands.command(name="mygoal", description="Show one of your goals with live backlog progress.")
     async def mygoal(self, interaction: discord.Interaction, goaltitle: str) -> None:
@@ -709,7 +719,7 @@ class GoalSystem(commands.Cog):
         if not goal:
             await interaction.response.send_message("I could not find that goal in your list.", ephemeral=True)
             return
-        await self._send_goal(interaction, goal)
+        await self._send_goal(interaction, goal, ephemeral=False)
 
     @mygoal.autocomplete("goaltitle")
     async def mygoal_title_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -877,7 +887,7 @@ class GoalSystem(commands.Cog):
 
     @app_commands.command(name="goallibrary", description="Browse official goals that you can copy.")
     async def goallibrary(self, interaction: discord.Interaction) -> None:
-        await self._send_template_list(interaction, moderator=False)
+        await self._send_template_list(interaction, moderator=False, ephemeral=False)
 
     @app_commands.command(name="modgoal", description="Create an official goal template (goal moderators only).")
     @app_commands.choices(goaltype=[
@@ -989,9 +999,11 @@ class GoalSystem(commands.Cog):
     async def modgoals(self, interaction: discord.Interaction) -> None:
         if not await self._require_mod(interaction):
             return
-        await self._send_template_list(interaction, moderator=True)
+        await self._send_template_list(interaction, moderator=True, ephemeral=True)
 
-    async def _send_template_list(self, interaction: discord.Interaction, moderator: bool) -> None:
+    async def _send_template_list(
+        self, interaction: discord.Interaction, moderator: bool, *, ephemeral: bool
+    ) -> None:
         rows = self.db.execute(
             """SELECT t.*, COUNT(DISTINCT i.id) AS item_count, COUNT(DISTINCT ug.id) AS copy_count
                FROM goal_templates t
@@ -1013,7 +1025,7 @@ class GoalSystem(commands.Cog):
                 name = labels[goal_type] if index == 0 else f"{labels[goal_type]} (continued)"
                 embed.add_field(name=name, value="\n".join(page), inline=False)
         embed.set_footer(text="Use /copygoal to start tracking an official goal.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
     async def _user_goal_choices(self, interaction: discord.Interaction, current: str):
         rows = self.db.execute(
