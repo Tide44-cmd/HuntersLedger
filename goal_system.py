@@ -478,7 +478,7 @@ class GoalSystem(commands.Cog):
             for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
                 letter_items = slot_groups.get(letter, [])
                 if not letter_items:
-                    lines.append(f"**{letter}:** ⬜ Empty")
+                    lines.append(f"**{letter}:** 🔲 Empty")
                     continue
                 for item in letter_items:
                     lines.append(f"**{letter}:** {self._format_item(item)}")
@@ -525,7 +525,7 @@ class GoalSystem(commands.Cog):
         if item["status"] == "in progress":
             return f"🟡 {name}{personal}"
         if item["status"] == "not started":
-            return f"⬜ {name}{personal}"
+            return f"🔲 {name}{personal}"
         return f"❔ {name}{personal}"
 
     async def _send_goal(
