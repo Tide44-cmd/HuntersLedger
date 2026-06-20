@@ -139,7 +139,10 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 @bot.event # Sync slash commands with Discord
 async def on_ready():
   # Register the bot's slash commands globally (across all servers) or for specific guilds
-    await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
+    if "calendar_invite" not in bot.extensions:
+        await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
+    if "goal_system" not in bot.extensions:
+        await bot.load_extension("goal_system")
     await bot.tree.sync()
     print(f"Logged in as {bot.user}!")
 
@@ -1191,14 +1194,30 @@ async def hunt_feedback(interaction: discord.Interaction, game_name: str):
         await interaction.response.send_message(f"No feedback found for '{game_name}'.")
 
 # Command: Displays a list of all available commands
+def can_manage_goal_templates(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return False
+    if interaction.user.guild_permissions.administrator:
+        return True
+    configured = os.getenv("GOAL_MOD_ROLES", "")
+    allowed = {name.strip().casefold() for name in configured.split(",") if name.strip()}
+    if not allowed:
+        allowed = {"admin", "administrator", "moderator", "leader", "event staff"}
+    return any(role.name.casefold() in allowed for role in interaction.user.roles)
+
+
 class HelpView(discord.ui.View):
-    def __init__(self, is_admin: bool):
+    def __init__(self, is_admin: bool, can_mod_goals: bool):
         super().__init__(timeout=300)
         self.is_admin = is_admin
+        self.can_mod_goals = can_mod_goals
 
         self.add_item(self.SectionButton("Quick Start", "quick"))
         self.add_item(self.SectionButton("Co-op Hunts", "coop"))
         self.add_item(self.SectionButton("Solo Hunts", "solo"))
+        self.add_item(self.SectionButton("Goals", "goals"))
+        if can_mod_goals:
+            self.add_item(self.SectionButton("Goal Mods", "goalmods"))
 
         self.add_item(self.SectionButton("Challenges", "challenges", row=1))
         self.add_item(self.SectionButton("Cards", "cards", row=1))
@@ -1213,14 +1232,18 @@ class HelpView(discord.ui.View):
             self.key = key
 
         async def callback(self, interaction: discord.Interaction):
-            embed = build_ledger_help_embed(self.key, is_admin=interaction.user.guild_permissions.administrator)
+            embed = build_ledger_help_embed(
+                self.key,
+                is_admin=self.view.is_admin,
+                can_mod_goals=self.view.can_mod_goals,
+            )
             if interaction.response.is_done():
                 await interaction.edit_original_response(embed=embed, view=self.view)
             else:
                 await interaction.response.edit_message(embed=embed, view=self.view)
 
 
-def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
+def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = False) -> discord.Embed:
     e = discord.Embed(color=0x2b2d31)
     base_note = "Use the buttons below to switch sections."
 
@@ -1233,6 +1256,8 @@ def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
             "3) Start a hunt: `/starthunt`\n"
             "4) Finish a hunt: `/finishhunt`\n"
             "5) Want a random pick? `/givemeahunt`\n\n"
+            "Build longer-term challenges with `/newgoal`, or browse "
+            "official templates with `/goallibrary`.\n\n"
             f"{base_note}"
         )
         return e
@@ -1273,12 +1298,45 @@ def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
         )
         return e
 
+    if section == "goals":
+        e.title = "Goal Tracking"
+        e.description = (
+            "**Create and view**\n"
+            "• New custom goal: `/newgoal goaltype goaltitle`\n"
+            "• All your goals: `/mygoals`\n"
+            "• Detailed live progress: `/mygoal goaltitle`\n\n"
+            "**Official goal library**\n"
+            "• Browse templates: `/goallibrary`\n"
+            "• Copy a template: `/copygoal goaltype goaltitle`\n"
+            "• Refresh from backlog/template: `/syncgoal goaltitle`\n\n"
+            "**Manage a personal goal**\n"
+            "• Add games: `/addtogoal goaltitle`\n"
+            "• Remove or hide: `/removefromgoal goaltitle game`\n"
+            "• Rename: `/renamegoal oldtitle newtitle`\n"
+            "• Delete: `/deletegoal goaltitle`\n"
+            "• Add missing games to backlog: `/addmissinghunts goaltitle`\n\n"
+            "_Progress is read from your solo backlog; completed hunts are crossed out automatically._"
+        )
+        return e
+
     if section == "cards":
         e.title = "Completion Cards"
         e.description = (
             "• Generate a completion card:\n"
             "  `/generatecard \"game\" [genre]`\n\n"
             "Genres (current): `fps`, `horror`, `racing`, `rpg`, `strategy`\n"
+        )
+        return e
+
+    if section == "goalmods" and can_mod_goals:
+        e.title = "Official Goal Templates"
+        e.description = (
+            "• Create: `/modgoal goaltype goaltitle`\n"
+            "• Add games and sync copies: `/modaddtogoal goaltype goaltitle`\n"
+            "• Archive a game: `/modremovefromgoal goaltype goaltitle game`\n"
+            "• Rename: `/modrenamegoal oldtitle newtitle`\n"
+            "• View templates and copy counts: `/modgoals`\n\n"
+            "_Approved roles are configured with `GOAL_MOD_ROLES`; administrators always have access._"
         )
         return e
 
@@ -1305,14 +1363,15 @@ def build_ledger_help_embed(section: str, is_admin: bool) -> discord.Embed:
         )
         return e
 
-    return build_ledger_help_embed("quick", is_admin=is_admin)
+    return build_ledger_help_embed("quick", is_admin=is_admin, can_mod_goals=can_mod_goals)
 
 
 @bot.tree.command(name="help", description="Shows help sections with buttons.")
 async def help_command(interaction: discord.Interaction):
     is_admin = bool(interaction.guild and interaction.user.guild_permissions.administrator)
-    view = HelpView(is_admin=is_admin)
-    embed = build_ledger_help_embed("quick", is_admin=is_admin)
+    can_mod_goals = can_manage_goal_templates(interaction)
+    view = HelpView(is_admin=is_admin, can_mod_goals=can_mod_goals)
+    embed = build_ledger_help_embed("quick", is_admin=is_admin, can_mod_goals=can_mod_goals)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
   
