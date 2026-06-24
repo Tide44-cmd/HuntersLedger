@@ -1089,4 +1089,194 @@ class GoalSystem(commands.Cog):
             parts.append("New template games added: " + ", ".join(added))
         if not completed and not added:
             parts.append("Everything was already up to date.")
-        await interaction.response.send_message
+        await interaction.response.send_message("\n".join(parts), ephemeral=True)
+
+    @syncgoal.autocomplete("goaltitle")
+    async def syncgoal_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._user_goal_choices(interaction, current)
+
+    @app_commands.command(name="addmissinghunts", description="Add a goal's missing games to your solo backlog.")
+    async def addmissinghunts(self, interaction: discord.Interaction, goaltitle: str) -> None:
+        goal = self._find_user_goal(str(interaction.user.id), goaltitle)
+        if not goal:
+            await interaction.response.send_message("I could not find that goal in your list.", ephemeral=True)
+            return
+        count, names = self.add_missing_to_backlog(goal["id"], interaction.user)
+        await interaction.response.send_message(
+            f"Added {count} missing hunt{'s' if count != 1 else ''} to your solo backlog as **Not Started**."
+            + ("\n" + summarize_names(names) if names else ""), ephemeral=True
+        )
+
+    @addmissinghunts.autocomplete("goaltitle")
+    async def missing_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._user_goal_choices(interaction, current)
+
+    @app_commands.command(name="goallibrary", description="Browse official goals that you can copy.")
+    async def goallibrary(self, interaction: discord.Interaction) -> None:
+        await self._send_template_list(interaction, moderator=False, ephemeral=False)
+
+    @app_commands.command(name="viewgamesingoal", description="Preview the games in an official goal before copying it.")
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
+    async def viewgamesingoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
+        template = self._find_template(goaltype.value, goaltitle)
+        if not template:
+            await interaction.response.send_message("I could not find that official goal template.", ephemeral=True)
+            return
+        embeds = self._template_embeds(template)
+        view = PaginatedEmbedsView(embeds) if len(embeds) > 1 else None
+        await interaction.response.send_message(embed=embeds[0], view=view, ephemeral=False)
+
+    @viewgamesingoal.autocomplete("goaltitle")
+    async def viewgames_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._template_choices(interaction, current)
+
+    @app_commands.command(name="modgoal", description="Create an official goal template (goal moderators only).")
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
+    async def modgoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
+        if not await self._require_mod(interaction):
+            return
+        title = self._clean_title(goaltitle)
+        if not title:
+            await interaction.response.send_message("Give the official goal a title.", ephemeral=True)
+            return
+        await interaction.response.send_modal(GoalItemsModal(self, goaltype.value, title, template=True))
+
+    @app_commands.command(name="modaddtogoal", description="Add games to an official goal and sync copies.")
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
+    async def modaddtogoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
+        if not await self._require_mod(interaction):
+            return
+        template = self._find_template(goaltype.value, goaltitle)
+        if not template:
+            await interaction.response.send_message("I could not find that official goal.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AddGoalItemsModal(self, template["id"], template["goal_type"], template=True))
+
+    @modaddtogoal.autocomplete("goaltitle")
+    async def modadd_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._template_choices(interaction, current)
+
+    @app_commands.command(name="modremovefromgoal", description="Archive a game in an official goal template.")
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
+    async def modremovefromgoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str, game: str) -> None:
+        if not await self._require_mod(interaction):
+            return
+        template = self._find_template(goaltype.value, goaltitle)
+        if not template:
+            await interaction.response.send_message("I could not find that official goal.", ephemeral=True)
+            return
+        item = self.db.execute(
+            """SELECT * FROM goal_template_items WHERE template_id = ? AND game_name = ? COLLATE NOCASE
+               AND is_active = 1""", (template["id"], game.strip())
+        ).fetchone()
+        if not item:
+            await interaction.response.send_message("I could not find that active game in the template.", ephemeral=True)
+            return
+        self.db.execute("UPDATE goal_template_items SET is_active = 0 WHERE id = ?", (item["id"],))
+        cursor = self.db.execute(
+            "UPDATE user_goal_items SET is_hidden = 1, updated_at = CURRENT_TIMESTAMP WHERE source_template_item_id = ?",
+            (item["id"],),
+        )
+        self.db.commit()
+        await interaction.response.send_message(
+            f"Archived **{item['game_name']}** in **{template['title']}** and hid it from {cursor.rowcount} linked goal copy/copies. Solo backlogs were unchanged.",
+            ephemeral=True,
+        )
+
+    @modremovefromgoal.autocomplete("goaltitle")
+    async def modremove_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._template_choices(interaction, current)
+
+    @modremovefromgoal.autocomplete("game")
+    async def modremove_game_autocomplete(self, interaction: discord.Interaction, current: str):
+        goal_type = self._goal_type_value(getattr(interaction.namespace, "goaltype", ""))
+        title = getattr(interaction.namespace, "goaltitle", "")
+        template = self._find_template(goal_type, title) if goal_type and title else None
+        if not template:
+            return []
+        rows = self.db.execute(
+            """SELECT game_name FROM goal_template_items WHERE template_id = ? AND is_active = 1
+               AND game_name LIKE ? COLLATE NOCASE ORDER BY sort_order, game_name LIMIT 25""",
+            (template["id"], f"%{current}%"),
+        ).fetchall()
+        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
+
+    @app_commands.command(name="modrenamegoal", description="Rename an official goal without breaking linked copies.")
+    async def modrenamegoal(self, interaction: discord.Interaction, oldtitle: str, newtitle: str) -> None:
+        if not await self._require_mod(interaction):
+            return
+        templates = self.db.execute(
+            "SELECT * FROM goal_templates WHERE title = ? COLLATE NOCASE AND is_active = 1", (oldtitle.strip(),)
+        ).fetchall()
+        if len(templates) != 1:
+            await interaction.response.send_message("The old title must identify exactly one active official goal.", ephemeral=True)
+            return
+        template = templates[0]
+        title = self._clean_title(newtitle)
+        try:
+            self.db.execute("UPDATE goal_templates SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (title, template["id"]))
+            self.db.execute(
+                """UPDATE user_goals SET title = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE source_template_id = ? AND title = ? COLLATE NOCASE""",
+                (title, template["id"], template["title"]),
+            )
+            self.db.commit()
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+            await interaction.response.send_message("That rename would create a duplicate template or user goal title.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Renamed official **{template['title']}** to **{title}**; personal custom names were preserved.", ephemeral=True)
+
+    @app_commands.command(name="modgoals", description="List official goal templates and copy counts.")
+    async def modgoals(self, interaction: discord.Interaction) -> None:
+        if not await self._require_mod(interaction):
+            return
+        await self._send_template_list(interaction, moderator=True, ephemeral=True)
+
+    async def _send_template_list(
+        self, interaction: discord.Interaction, moderator: bool, *, ephemeral: bool
+    ) -> None:
+        rows = self.db.execute(
+            """SELECT t.*, COUNT(DISTINCT i.id) AS item_count, COUNT(DISTINCT ug.id) AS copy_count
+               FROM goal_templates t
+               LEFT JOIN goal_template_items i ON i.template_id = t.id AND i.is_active = 1
+               LEFT JOIN user_goals ug ON ug.source_template_id = t.id AND ug.is_active = 1
+               WHERE t.is_active = 1 GROUP BY t.id ORDER BY t.goal_type, t.title"""
+        ).fetchall()
+        if not rows:
+            await interaction.response.send_message("There are no official goal templates yet.", ephemeral=True)
+            return
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for row in rows:
+            copies = f" — {row['copy_count']} copied" if moderator else ""
+            grouped[row["goal_type"]].append(f"**{row['title']}** — {row['item_count']} games{copies}")
+        embed = discord.Embed(title="Official Hunter's Haven Goal Library", color=0xF1C40F)
+        for goal_type in GOAL_TYPES:
+            for index, page in enumerate(chunk_lines(grouped[goal_type])):
+                name = GOAL_LABELS[goal_type] if index == 0 else f"{GOAL_LABELS[goal_type]} (continued)"
+                embed.add_field(name=name, value="\n".join(page), inline=False)
+        embed.set_footer(text="Use /copygoal to start tracking an official goal.")
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+    async def _user_goal_choices(self, interaction: discord.Interaction, current: str, user_id: str | None = None):
+        rows = self.db.execute(
+            """SELECT title FROM user_goals WHERE user_id = ? AND is_active = 1
+               AND title LIKE ? COLLATE NOCASE ORDER BY title LIMIT 25""",
+            (user_id or str(interaction.user.id), f"%{current}%"),
+        ).fetchall()
+        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
+
+    async def _template_choices(self, interaction: discord.Interaction, current: str):
+        goal_type = self._goal_type_value(getattr(interaction.namespace, "goaltype", ""))
+        if goal_type not in GOAL_TYPES:
+            return []
+        rows = self.db.execute(
+            """SELECT title FROM goal_templates WHERE goal_type = ? AND is_active = 1
+               AND title LIKE ? COLLATE NOCASE ORDER BY title LIMIT 25""",
+            (goal_type, f"%{current}%"),
+        ).fetchall()
+        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(GoalSystem(bot))
