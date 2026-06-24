@@ -375,6 +375,7 @@ class GoalSystem(commands.Cog):
             CREATE INDEX IF NOT EXISTS idx_user_goal_items_goal ON user_goal_items(user_goal_id, is_hidden);
             """
         )
+        self.db.commit()
         self._migrate_goal_type_checks()
         self.db.executescript(
             """
@@ -386,10 +387,16 @@ class GoalSystem(commands.Cog):
         self.db.commit()
 
     def _migrate_goal_type_checks(self) -> None:
-        """Rebuild earlier goal tables whose CHECK constraints lack newer goal types."""
-        for table, create_sql, columns in (
-            (
-                "goal_templates",
+        """Rebuild old/damaged goal tables after adding Event and Personal types.
+
+        SQLite rewrites child foreign-key definitions when a parent table is
+        renamed. The first version of this migration rebuilt the parent tables
+        only, which could leave user_goal_items pointing at the dropped
+        temporary table user_goals_old_goal_type_check. This repair rebuilds
+        both parents and dependent item tables when needed.
+        """
+        table_defs = {
+            "goal_templates": (
                 """CREATE TABLE goal_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
@@ -407,8 +414,26 @@ class GoalSystem(commands.Cog):
                 "id, goal_type, title, description, created_by_user_id, created_by_user_name, "
                 "created_at, updated_at, is_active, sync_enabled_by_default, allow_personal_additions",
             ),
-            (
-                "user_goals",
+            "goal_template_items": (
+                """CREATE TABLE goal_template_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    template_id INTEGER NOT NULL REFERENCES goal_templates(id) ON DELETE CASCADE,
+                    game_name TEXT NOT NULL,
+                    normalized_game_name TEXT NOT NULL,
+                    slot_label TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    platform TEXT,
+                    notes TEXT,
+                    is_optional INTEGER NOT NULL DEFAULT 0,
+                    is_unobtainable INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(template_id, normalized_game_name)
+                )""",
+                "id, template_id, game_name, normalized_game_name, slot_label, sort_order, "
+                "platform, notes, is_optional, is_unobtainable, is_active, created_at",
+            ),
+            "user_goals": (
                 """CREATE TABLE user_goals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
@@ -428,18 +453,83 @@ class GoalSystem(commands.Cog):
                 "id, user_id, user_name, goal_type, title, description, source_template_id, "
                 "is_template_copy, sync_enabled, created_at, updated_at, last_synced_at, is_active",
             ),
-        ):
+            "user_goal_items": (
+                """CREATE TABLE user_goal_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_goal_id INTEGER NOT NULL REFERENCES user_goals(id) ON DELETE CASCADE,
+                    source_template_item_id INTEGER REFERENCES goal_template_items(id) ON DELETE SET NULL,
+                    game_name TEXT NOT NULL,
+                    normalized_game_name TEXT NOT NULL,
+                    slot_label TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    platform TEXT,
+                    notes TEXT,
+                    is_personal_addition INTEGER NOT NULL DEFAULT 0,
+                    is_hidden INTEGER NOT NULL DEFAULT 0,
+                    manual_status TEXT,
+                    linked_solo_backlog_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_goal_id, normalized_game_name)
+                )""",
+                "id, user_goal_id, source_template_item_id, game_name, normalized_game_name, "
+                "slot_label, sort_order, platform, notes, is_personal_addition, is_hidden, "
+                "manual_status, linked_solo_backlog_id, created_at, updated_at",
+            ),
+        }
+
+        def table_sql(table: str) -> str:
             row = self.db.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
             ).fetchone()
-            if not row or "event" in row["sql"] and "personal" in row["sql"]:
-                continue
-            old_table = f"{table}_old_goal_type_check"
-            self.db.execute("PRAGMA foreign_keys = OFF")
-            self.db.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+            return row["sql"] if row and row["sql"] else ""
+
+        def temp_name_for(table: str) -> str:
+            base = f"{table}_rebuild_fix"
+            candidate = base
+            suffix = 1
+            while self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (candidate,)
+            ).fetchone():
+                suffix += 1
+                candidate = f"{base}_{suffix}"
+            return candidate
+
+        def rebuild(table: str) -> None:
+            create_sql, columns = table_defs[table]
+            temp_table = temp_name_for(table)
+            self.db.execute(f"ALTER TABLE {table} RENAME TO {temp_table}")
             self.db.execute(create_sql)
-            self.db.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {old_table}")
-            self.db.execute(f"DROP TABLE {old_table}")
+            self.db.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {temp_table}")
+            self.db.execute(f"DROP TABLE {temp_table}")
+
+        self.db.commit()
+        self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            if "event" not in table_sql("goal_templates") or "personal" not in table_sql("goal_templates"):
+                rebuild("goal_templates")
+
+            user_goals_sql = table_sql("user_goals")
+            if (
+                "event" not in user_goals_sql
+                or "personal" not in user_goals_sql
+                or "_old_goal_type_check" in user_goals_sql
+                or "_rebuild_fix" in user_goals_sql
+            ):
+                rebuild("user_goals")
+
+            goal_template_items_sql = table_sql("goal_template_items")
+            if "_old_goal_type_check" in goal_template_items_sql or "_rebuild_fix" in goal_template_items_sql:
+                rebuild("goal_template_items")
+
+            user_goal_items_sql = table_sql("user_goal_items")
+            if "_old_goal_type_check" in user_goal_items_sql or "_rebuild_fix" in user_goal_items_sql:
+                rebuild("user_goal_items")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        finally:
             self.db.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
