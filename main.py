@@ -16,7 +16,6 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 import re
 import asyncio
-import importlib
 
 
 # Load environment variables
@@ -142,15 +141,8 @@ async def on_ready():
   # Register the bot's slash commands globally (across all servers) or for specific guilds
     if "calendar_invite" not in bot.extensions:
         await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
-    if "goal_system" not in bot.extensions and bot.get_cog("GoalSystem") is None:
-        try:
-            await bot.load_extension("goal_system")
-        except commands.errors.NoEntryPointError:
-            goal_module = importlib.import_module("goal_system")
-            goal_cog = getattr(goal_module, "GoalSystem", None)
-            if goal_cog is None:
-                raise
-            await bot.add_cog(goal_cog(bot))
+    if "goal_system" not in bot.extensions:
+        await bot.load_extension("goal_system")
     await bot.tree.sync()
     print(f"Logged in as {bot.user}!")
 
