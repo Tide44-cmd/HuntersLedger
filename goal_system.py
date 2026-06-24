@@ -19,7 +19,17 @@ from discord.ext import commands
 
 
 DB_PATH = os.getenv("HUNTERS_LEDGER_DB", "hunters_ledger.db")
-GOAL_TYPES = ("series", "az", "genre")
+GOAL_TYPES = ("series", "az", "genre", "event", "personal")
+GOAL_LABELS = {
+    "series": "Series",
+    "az": "A–Z",
+    "genre": "Genre",
+    "event": "Event",
+    "personal": "Personal",
+}
+GOAL_TYPE_CHOICES = [
+    app_commands.Choice(name=label, value=value) for value, label in GOAL_LABELS.items()
+]
 DEFAULT_MOD_ROLE_IDS = {
     1314735241360834640,  # Moderator
     1306562882778959954,  # Admin
@@ -163,7 +173,7 @@ class AddMissingHuntsView(discord.ui.View):
         self.user_goal_id = user_goal_id
         self.owner_id = owner_id
 
-    @discord.ui.button(label="Add Missing Hunts", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Add to Backlog", style=discord.ButtonStyle.success)
     async def add_missing(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if str(interaction.user.id) != self.owner_id:
             await interaction.response.send_message("This button belongs to another hunter.", ephemeral=True)
@@ -213,6 +223,72 @@ class ConfirmDeleteGoalView(discord.ui.View):
         await interaction.response.edit_message(content="Goal deletion cancelled.", embed=None, view=None)
 
 
+class PaginatedEmbedsView(discord.ui.View):
+    def __init__(
+        self,
+        embeds: list[discord.Embed],
+        *,
+        cog: "GoalSystem" | None = None,
+        user_goal_id: int | None = None,
+        owner_id: str | None = None,
+        add_to_backlog: bool = False,
+    ):
+        super().__init__(timeout=300)
+        self.embeds = embeds
+        self.index = 0
+        self.cog = cog
+        self.user_goal_id = user_goal_id
+        self.owner_id = owner_id
+        self.previous_button: discord.ui.Button | None = None
+        self.next_button: discord.ui.Button | None = None
+
+        if len(embeds) > 1:
+            self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
+            self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary)
+            self.previous_button.callback = self.previous_page
+            self.next_button.callback = self.next_page
+            self.add_item(self.previous_button)
+            self.add_item(self.next_button)
+
+        if add_to_backlog and cog and user_goal_id and owner_id:
+            add_button = discord.ui.Button(label="Add to Backlog", style=discord.ButtonStyle.success)
+            add_button.callback = self.add_to_backlog_callback
+            self.add_item(add_button)
+
+    async def previous_page(self, interaction: discord.Interaction) -> None:
+        self.index = max(0, self.index - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+
+    async def next_page(self, interaction: discord.Interaction) -> None:
+        self.index = min(len(self.embeds) - 1, self.index + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+
+    async def add_to_backlog_callback(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self.owner_id:
+            await interaction.response.send_message("This button belongs to another hunter.", ephemeral=True)
+            return
+        count, names = self.cog.add_missing_to_backlog(self.user_goal_id, interaction.user)
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.label == "Add to Backlog":
+                child.disabled = True
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+        summary = summarize_names(names)
+        await interaction.followup.send(
+            f"Added {count} missing hunt{'s' if count != 1 else ''} as **Not Started**."
+            + (f"\n{summary}" if summary else ""),
+            ephemeral=True,
+        )
+
+    def _sync_buttons(self) -> None:
+        if self.previous_button:
+            self.previous_button.disabled = self.index == 0
+        if self.next_button:
+            self.next_button.disabled = self.index >= len(self.embeds) - 1
+
+
 class GoalSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -229,7 +305,7 @@ class GoalSystem(commands.Cog):
             """
             CREATE TABLE IF NOT EXISTS goal_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre')),
+                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
                 title TEXT NOT NULL COLLATE NOCASE,
                 description TEXT,
                 created_by_user_id TEXT NOT NULL,
@@ -262,7 +338,7 @@ class GoalSystem(commands.Cog):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
                 user_name TEXT NOT NULL,
-                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre')),
+                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
                 title TEXT NOT NULL COLLATE NOCASE,
                 description TEXT,
                 source_template_id INTEGER REFERENCES goal_templates(id) ON DELETE SET NULL,
@@ -299,7 +375,72 @@ class GoalSystem(commands.Cog):
             CREATE INDEX IF NOT EXISTS idx_user_goal_items_goal ON user_goal_items(user_goal_id, is_hidden);
             """
         )
+        self._migrate_goal_type_checks()
+        self.db.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_goals_owner ON user_goals(user_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_user_goals_template ON user_goals(source_template_id, sync_enabled);
+            CREATE INDEX IF NOT EXISTS idx_user_goal_items_goal ON user_goal_items(user_goal_id, is_hidden);
+            """
+        )
         self.db.commit()
+
+    def _migrate_goal_type_checks(self) -> None:
+        """Rebuild earlier goal tables whose CHECK constraints lack newer goal types."""
+        for table, create_sql, columns in (
+            (
+                "goal_templates",
+                """CREATE TABLE goal_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                    title TEXT NOT NULL COLLATE NOCASE,
+                    description TEXT,
+                    created_by_user_id TEXT NOT NULL,
+                    created_by_user_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    sync_enabled_by_default INTEGER NOT NULL DEFAULT 1,
+                    allow_personal_additions INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(goal_type, title)
+                )""",
+                "id, goal_type, title, description, created_by_user_id, created_by_user_name, "
+                "created_at, updated_at, is_active, sync_enabled_by_default, allow_personal_additions",
+            ),
+            (
+                "user_goals",
+                """CREATE TABLE user_goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT NOT NULL,
+                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                    title TEXT NOT NULL COLLATE NOCASE,
+                    description TEXT,
+                    source_template_id INTEGER REFERENCES goal_templates(id) ON DELETE SET NULL,
+                    is_template_copy INTEGER NOT NULL DEFAULT 0,
+                    sync_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_synced_at TIMESTAMP,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(user_id, title)
+                )""",
+                "id, user_id, user_name, goal_type, title, description, source_template_id, "
+                "is_template_copy, sync_enabled, created_at, updated_at, last_synced_at, is_active",
+            ),
+        ):
+            row = self.db.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if not row or "event" in row["sql"] and "personal" in row["sql"]:
+                continue
+            old_table = f"{table}_old_goal_type_check"
+            self.db.execute("PRAGMA foreign_keys = OFF")
+            self.db.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+            self.db.execute(create_sql)
+            self.db.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {old_table}")
+            self.db.execute(f"DROP TABLE {old_table}")
+            self.db.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _goal_type_value(value: object) -> str:
@@ -491,7 +632,7 @@ class GoalSystem(commands.Cog):
 
         header = (
             f"**Owned by:** {discord.utils.escape_markdown(getattr(user, 'display_name', str(user)))}\n"
-            f"**Goal type:** {goal['goal_type'].upper() if goal['goal_type'] == 'az' else goal['goal_type'].title()}\n"
+            f"**Goal type:** {GOAL_LABELS.get(goal['goal_type'], goal['goal_type'].title())}\n"
             f"**Source:** {discord.utils.escape_markdown(source)}\n"
             f"**Progress:** {completed}/{total} completed\n`{make_progress_bar(completed, total)}`"
         )
@@ -508,13 +649,66 @@ class GoalSystem(commands.Cog):
             if index == 0:
                 embed.set_thumbnail(url=user.display_avatar.url)
             synced = goal["last_synced_at"] or "Live from solo backlog"
-            embed.set_footer(text=f"Last sync: {synced}")
+            page_note = f" • Page {index + 1}/{len(pages)}" if len(pages) > 1 else ""
+            embed.set_footer(text=f"Last sync: {synced}{page_note}")
             embeds.append(embed)
         shown_lines = sum(len(page) for page in pages)
         if len(lines) > shown_lines:
             embeds[-1].add_field(name="Display limit", value=f"{len(lines) - shown_lines} more items are not shown.", inline=False)
         missing = sum(item["status"] == "missing" for item in items)
         return embeds, missing
+
+    def _template_embeds(self, template: sqlite3.Row) -> list[discord.Embed]:
+        rows = self.db.execute(
+            """SELECT * FROM goal_template_items
+               WHERE template_id = ? AND is_active = 1
+               ORDER BY CASE WHEN slot_label IS NULL THEN 1 ELSE 0 END, slot_label, sort_order, id""",
+            (template["id"],),
+        ).fetchall()
+        lines: list[str] = []
+        if template["goal_type"] == "az":
+            slot_groups: dict[str, list[sqlite3.Row]] = defaultdict(list)
+            for row in rows:
+                slot_groups[row["slot_label"] or "?"].append(row)
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                letter_items = slot_groups.get(letter, [])
+                if not letter_items:
+                    lines.append(f"**{letter}:** 🔲 Empty")
+                    continue
+                for item in letter_items:
+                    lines.append(f"**{letter}:** {discord.utils.escape_markdown(item['game_name'])}")
+            for item in slot_groups.get("?", []):
+                lines.append(f"**?:** {discord.utils.escape_markdown(item['game_name'])}")
+        else:
+            lines = [f"• {discord.utils.escape_markdown(row['game_name'])}" for row in rows]
+        if not lines:
+            lines = ["No active games are currently listed for this goal."]
+
+        copy_count = self.db.execute(
+            "SELECT COUNT(*) FROM user_goals WHERE source_template_id = ? AND is_active = 1",
+            (template["id"],),
+        ).fetchone()[0]
+        header = (
+            f"**Goal type:** {GOAL_LABELS.get(template['goal_type'], template['goal_type'].title())}\n"
+            f"**Games:** {len(rows)}\n"
+            f"**Copied by:** {copy_count} hunter{'s' if copy_count != 1 else ''}"
+        )
+        pages = chunk_lines(lines)[:10]
+        embeds: list[discord.Embed] = []
+        for index, page in enumerate(pages):
+            embed = discord.Embed(
+                title=template["title"] if index == 0 else f"{template['title']} — {index + 1}",
+                description=header if index == 0 else None,
+                color=0xF1C40F,
+            )
+            embed.add_field(name="Games", value="\n".join(page), inline=False)
+            page_note = f"Page {index + 1}/{len(pages)}" if len(pages) > 1 else "Official goal template"
+            embed.set_footer(text=page_note)
+            embeds.append(embed)
+        shown_lines = sum(len(page) for page in pages)
+        if len(lines) > shown_lines:
+            embeds[-1].add_field(name="Display limit", value=f"{len(lines) - shown_lines} more items are not shown.", inline=False)
+        return embeds
 
     @staticmethod
     def _format_item(item: dict) -> str:
@@ -529,11 +723,29 @@ class GoalSystem(commands.Cog):
         return f"❔ {name}{personal}"
 
     async def _send_goal(
-        self, interaction: discord.Interaction, goal: sqlite3.Row, *, ephemeral: bool = True
+        self,
+        interaction: discord.Interaction,
+        goal: sqlite3.Row,
+        *,
+        display_user: discord.abc.User | None = None,
+        allow_backlog_button: bool = True,
+        ephemeral: bool = True,
     ) -> None:
-        embeds, missing = self._goal_embeds(goal, interaction.user)
-        view = AddMissingHuntsView(self, goal["id"], str(interaction.user.id)) if missing else None
-        await interaction.response.send_message(embeds=embeds, view=view, ephemeral=ephemeral)
+        display_user = display_user or interaction.user
+        embeds, missing = self._goal_embeds(goal, display_user)
+        can_add_to_backlog = (
+            allow_backlog_button
+            and bool(missing)
+            and str(interaction.user.id) == str(goal["user_id"])
+        )
+        view = PaginatedEmbedsView(
+            embeds,
+            cog=self,
+            user_goal_id=goal["id"],
+            owner_id=str(goal["user_id"]),
+            add_to_backlog=can_add_to_backlog,
+        ) if len(embeds) > 1 or can_add_to_backlog else None
+        await interaction.response.send_message(embed=embeds[0], view=view, ephemeral=ephemeral)
 
     async def create_user_goal(self, interaction: discord.Interaction, goal_type: str, title: str, raw: str) -> None:
         items, skipped = parse_goal_items(raw, goal_type)
@@ -584,7 +796,7 @@ class GoalSystem(commands.Cog):
             return
         note = f" Skipped {len(skipped)} duplicate line(s)." if skipped else ""
         await interaction.response.send_message(
-            f"Created official **{title}** with {len(items)} game{'s' if len(items) != 1 else ''}.{note}", ephemeral=True
+            f"Created official **{title}** with {len(items)} game{'s' if len(items) != 1 else ''}.{note}", ephemeral=False
         )
 
     async def add_user_items(self, interaction: discord.Interaction, goal_id: int, goal_type: str, raw: str) -> None:
@@ -675,12 +887,8 @@ class GoalSystem(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="newgoal", description="Create a custom series, A–Z, or genre goal.")
-    @app_commands.choices(goaltype=[
-        app_commands.Choice(name="Series", value="series"),
-        app_commands.Choice(name="A–Z", value="az"),
-        app_commands.Choice(name="Genre", value="genre"),
-    ])
+    @app_commands.command(name="newgoal", description="Create a custom series, A–Z, genre, event, or personal goal.")
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
     async def newgoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
         title = self._clean_title(goaltitle)
         if not title:
@@ -705,10 +913,10 @@ class GoalSystem(commands.Cog):
             completed, total, _ = self._progress(goal)
             grouped[goal["goal_type"]].append(f"**{goal['title']}** — {completed}/{total} complete")
         embed = discord.Embed(title=f"{interaction.user.display_name}'s Goals", color=0x4F8CFF)
-        labels = {"series": "Series Goals", "az": "A–Z Goals", "genre": "Genre Goals"}
         for goal_type in GOAL_TYPES:
             for index, page in enumerate(chunk_lines(grouped[goal_type])):
-                name = labels[goal_type] if index == 0 else f"{labels[goal_type]} (continued)"
+                label = f"{GOAL_LABELS[goal_type]} Goals"
+                name = label if index == 0 else f"{label} (continued)"
                 embed.add_field(name=name, value="\n".join(page), inline=False)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed, ephemeral=False)
@@ -725,11 +933,29 @@ class GoalSystem(commands.Cog):
     async def mygoal_title_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self._user_goal_choices(interaction, current)
 
+    @app_commands.command(name="showgoal", description="Show another member's public goal progress.")
+    async def showgoal(self, interaction: discord.Interaction, user: discord.User, goaltitle: str) -> None:
+        goal = self._find_user_goal(str(user.id), goaltitle)
+        if not goal:
+            await interaction.response.send_message("I could not find that goal for that hunter.", ephemeral=True)
+            return
+        await self._send_goal(
+            interaction,
+            goal,
+            display_user=user,
+            allow_backlog_button=False,
+            ephemeral=False,
+        )
+
+    @showgoal.autocomplete("goaltitle")
+    async def showgoal_title_autocomplete(self, interaction: discord.Interaction, current: str):
+        selected_user = getattr(interaction.namespace, "user", None)
+        if not selected_user:
+            return []
+        return await self._user_goal_choices(interaction, current, user_id=str(selected_user.id))
+
     @app_commands.command(name="copygoal", description="Copy an official goal template into your goals.")
-    @app_commands.choices(goaltype=[
-        app_commands.Choice(name="Series", value="series"), app_commands.Choice(name="A–Z", value="az"),
-        app_commands.Choice(name="Genre", value="genre"),
-    ])
+    @app_commands.choices(goaltype=GOAL_TYPE_CHOICES)
     async def copygoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
         template = self._find_template(goaltype.value, goaltitle)
         if not template:
@@ -863,189 +1089,4 @@ class GoalSystem(commands.Cog):
             parts.append("New template games added: " + ", ".join(added))
         if not completed and not added:
             parts.append("Everything was already up to date.")
-        await interaction.response.send_message("\n".join(parts), ephemeral=True)
-
-    @syncgoal.autocomplete("goaltitle")
-    async def syncgoal_title_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self._user_goal_choices(interaction, current)
-
-    @app_commands.command(name="addmissinghunts", description="Add a goal's missing games to your solo backlog.")
-    async def addmissinghunts(self, interaction: discord.Interaction, goaltitle: str) -> None:
-        goal = self._find_user_goal(str(interaction.user.id), goaltitle)
-        if not goal:
-            await interaction.response.send_message("I could not find that goal in your list.", ephemeral=True)
-            return
-        count, names = self.add_missing_to_backlog(goal["id"], interaction.user)
-        await interaction.response.send_message(
-            f"Added {count} missing hunt{'s' if count != 1 else ''} to your solo backlog as **Not Started**."
-            + ("\n" + summarize_names(names) if names else ""), ephemeral=True
-        )
-
-    @addmissinghunts.autocomplete("goaltitle")
-    async def missing_title_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self._user_goal_choices(interaction, current)
-
-    @app_commands.command(name="goallibrary", description="Browse official goals that you can copy.")
-    async def goallibrary(self, interaction: discord.Interaction) -> None:
-        await self._send_template_list(interaction, moderator=False, ephemeral=False)
-
-    @app_commands.command(name="modgoal", description="Create an official goal template (goal moderators only).")
-    @app_commands.choices(goaltype=[
-        app_commands.Choice(name="Series", value="series"), app_commands.Choice(name="A–Z", value="az"),
-        app_commands.Choice(name="Genre", value="genre"),
-    ])
-    async def modgoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
-        if not await self._require_mod(interaction):
-            return
-        title = self._clean_title(goaltitle)
-        if not title:
-            await interaction.response.send_message("Give the official goal a title.", ephemeral=True)
-            return
-        await interaction.response.send_modal(GoalItemsModal(self, goaltype.value, title, template=True))
-
-    @app_commands.command(name="modaddtogoal", description="Add games to an official goal and sync copies.")
-    @app_commands.choices(goaltype=[
-        app_commands.Choice(name="Series", value="series"), app_commands.Choice(name="A–Z", value="az"),
-        app_commands.Choice(name="Genre", value="genre"),
-    ])
-    async def modaddtogoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str) -> None:
-        if not await self._require_mod(interaction):
-            return
-        template = self._find_template(goaltype.value, goaltitle)
-        if not template:
-            await interaction.response.send_message("I could not find that official goal.", ephemeral=True)
-            return
-        await interaction.response.send_modal(AddGoalItemsModal(self, template["id"], template["goal_type"], template=True))
-
-    @modaddtogoal.autocomplete("goaltitle")
-    async def modadd_title_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self._template_choices(interaction, current)
-
-    @app_commands.command(name="modremovefromgoal", description="Archive a game in an official goal template.")
-    @app_commands.choices(goaltype=[
-        app_commands.Choice(name="Series", value="series"), app_commands.Choice(name="A–Z", value="az"),
-        app_commands.Choice(name="Genre", value="genre"),
-    ])
-    async def modremovefromgoal(self, interaction: discord.Interaction, goaltype: app_commands.Choice[str], goaltitle: str, game: str) -> None:
-        if not await self._require_mod(interaction):
-            return
-        template = self._find_template(goaltype.value, goaltitle)
-        if not template:
-            await interaction.response.send_message("I could not find that official goal.", ephemeral=True)
-            return
-        item = self.db.execute(
-            """SELECT * FROM goal_template_items WHERE template_id = ? AND game_name = ? COLLATE NOCASE
-               AND is_active = 1""", (template["id"], game.strip())
-        ).fetchone()
-        if not item:
-            await interaction.response.send_message("I could not find that active game in the template.", ephemeral=True)
-            return
-        self.db.execute("UPDATE goal_template_items SET is_active = 0 WHERE id = ?", (item["id"],))
-        cursor = self.db.execute(
-            "UPDATE user_goal_items SET is_hidden = 1, updated_at = CURRENT_TIMESTAMP WHERE source_template_item_id = ?",
-            (item["id"],),
-        )
-        self.db.commit()
-        await interaction.response.send_message(
-            f"Archived **{item['game_name']}** in **{template['title']}** and hid it from {cursor.rowcount} linked goal copy/copies. Solo backlogs were unchanged.",
-            ephemeral=True,
-        )
-
-    @modremovefromgoal.autocomplete("goaltitle")
-    async def modremove_title_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self._template_choices(interaction, current)
-
-    @modremovefromgoal.autocomplete("game")
-    async def modremove_game_autocomplete(self, interaction: discord.Interaction, current: str):
-        goal_type = self._goal_type_value(getattr(interaction.namespace, "goaltype", ""))
-        title = getattr(interaction.namespace, "goaltitle", "")
-        template = self._find_template(goal_type, title) if goal_type and title else None
-        if not template:
-            return []
-        rows = self.db.execute(
-            """SELECT game_name FROM goal_template_items WHERE template_id = ? AND is_active = 1
-               AND game_name LIKE ? COLLATE NOCASE ORDER BY sort_order, game_name LIMIT 25""",
-            (template["id"], f"%{current}%"),
-        ).fetchall()
-        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
-
-    @app_commands.command(name="modrenamegoal", description="Rename an official goal without breaking linked copies.")
-    async def modrenamegoal(self, interaction: discord.Interaction, oldtitle: str, newtitle: str) -> None:
-        if not await self._require_mod(interaction):
-            return
-        templates = self.db.execute(
-            "SELECT * FROM goal_templates WHERE title = ? COLLATE NOCASE AND is_active = 1", (oldtitle.strip(),)
-        ).fetchall()
-        if len(templates) != 1:
-            await interaction.response.send_message("The old title must identify exactly one active official goal.", ephemeral=True)
-            return
-        template = templates[0]
-        title = self._clean_title(newtitle)
-        try:
-            self.db.execute("UPDATE goal_templates SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (title, template["id"]))
-            self.db.execute(
-                """UPDATE user_goals SET title = ?, updated_at = CURRENT_TIMESTAMP
-                   WHERE source_template_id = ? AND title = ? COLLATE NOCASE""",
-                (title, template["id"], template["title"]),
-            )
-            self.db.commit()
-        except sqlite3.IntegrityError:
-            self.db.rollback()
-            await interaction.response.send_message("That rename would create a duplicate template or user goal title.", ephemeral=True)
-            return
-        await interaction.response.send_message(f"Renamed official **{template['title']}** to **{title}**; personal custom names were preserved.", ephemeral=True)
-
-    @app_commands.command(name="modgoals", description="List official goal templates and copy counts.")
-    async def modgoals(self, interaction: discord.Interaction) -> None:
-        if not await self._require_mod(interaction):
-            return
-        await self._send_template_list(interaction, moderator=True, ephemeral=True)
-
-    async def _send_template_list(
-        self, interaction: discord.Interaction, moderator: bool, *, ephemeral: bool
-    ) -> None:
-        rows = self.db.execute(
-            """SELECT t.*, COUNT(DISTINCT i.id) AS item_count, COUNT(DISTINCT ug.id) AS copy_count
-               FROM goal_templates t
-               LEFT JOIN goal_template_items i ON i.template_id = t.id AND i.is_active = 1
-               LEFT JOIN user_goals ug ON ug.source_template_id = t.id AND ug.is_active = 1
-               WHERE t.is_active = 1 GROUP BY t.id ORDER BY t.goal_type, t.title"""
-        ).fetchall()
-        if not rows:
-            await interaction.response.send_message("There are no official goal templates yet.", ephemeral=True)
-            return
-        grouped: dict[str, list[str]] = defaultdict(list)
-        for row in rows:
-            copies = f" — {row['copy_count']} copied" if moderator else ""
-            grouped[row["goal_type"]].append(f"**{row['title']}** — {row['item_count']} games{copies}")
-        embed = discord.Embed(title="Official Hunter's Haven Goal Library", color=0xF1C40F)
-        labels = {"series": "Series", "az": "A–Z", "genre": "Genre"}
-        for goal_type in GOAL_TYPES:
-            for index, page in enumerate(chunk_lines(grouped[goal_type])):
-                name = labels[goal_type] if index == 0 else f"{labels[goal_type]} (continued)"
-                embed.add_field(name=name, value="\n".join(page), inline=False)
-        embed.set_footer(text="Use /copygoal to start tracking an official goal.")
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
-
-    async def _user_goal_choices(self, interaction: discord.Interaction, current: str):
-        rows = self.db.execute(
-            """SELECT title FROM user_goals WHERE user_id = ? AND is_active = 1
-               AND title LIKE ? COLLATE NOCASE ORDER BY title LIMIT 25""",
-            (str(interaction.user.id), f"%{current}%"),
-        ).fetchall()
-        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
-
-    async def _template_choices(self, interaction: discord.Interaction, current: str):
-        goal_type = self._goal_type_value(getattr(interaction.namespace, "goaltype", ""))
-        if goal_type not in GOAL_TYPES:
-            return []
-        rows = self.db.execute(
-            """SELECT title FROM goal_templates WHERE goal_type = ? AND is_active = 1
-               AND title LIKE ? COLLATE NOCASE ORDER BY title LIMIT 25""",
-            (goal_type, f"%{current}%"),
-        ).fetchall()
-        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
-
-
-async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(GoalSystem(bot))
+        await interaction.response.send_message
