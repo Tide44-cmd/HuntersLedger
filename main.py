@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 import re
 import asyncio
+import importlib
 
 
 # Load environment variables
@@ -141,8 +142,15 @@ async def on_ready():
   # Register the bot's slash commands globally (across all servers) or for specific guilds
     if "calendar_invite" not in bot.extensions:
         await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
-    if "goal_system" not in bot.extensions:
-        await bot.load_extension("goal_system")
+    if "goal_system" not in bot.extensions and bot.get_cog("GoalSystem") is None:
+        try:
+            await bot.load_extension("goal_system")
+        except commands.errors.NoEntryPointError:
+            goal_module = importlib.import_module("goal_system")
+            goal_cog = getattr(goal_module, "GoalSystem", None)
+            if goal_cog is None:
+                raise
+            await bot.add_cog(goal_cog(bot))
     await bot.tree.sync()
     print(f"Logged in as {bot.user}!")
 
@@ -1312,8 +1320,10 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
             "• New custom goal: `/newgoal goaltype goaltitle`\n"
             "• All your goals: `/mygoals`\n"
             "• Detailed live progress: `/mygoal goaltitle`\n\n"
+            "• Show another hunter's goal: `/showgoal user goaltitle`\n\n"
             "**Official goal library**\n"
             "• Browse templates: `/goallibrary`\n"
+            "• Preview template games: `/viewgamesingoal goaltype goaltitle`\n"
             "• Copy a template: `/copygoal goaltype goaltitle`\n"
             "• Refresh from backlog/template: `/syncgoal goaltitle`\n\n"
             "**Manage a personal goal**\n"
@@ -1321,8 +1331,8 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
             "• Remove or hide: `/removefromgoal goaltitle game`\n"
             "• Rename: `/renamegoal oldtitle newtitle`\n"
             "• Delete: `/deletegoal goaltitle`\n"
-            "• Add missing games to backlog: `/addmissinghunts goaltitle`\n\n"
-            "_Progress is read from your solo backlog; completed hunts are crossed out automatically._"
+            "• Add goal games to backlog: `/addmissinghunts goaltitle`\n\n"
+            "_Goal types: Series, A–Z, Genre, Event, and Personal. Progress is read from your solo backlog; completed hunts are crossed out automatically._"
         )
         return e
 
