@@ -16,6 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 import re
 import asyncio
+from functools import lru_cache
+from io import BytesIO
 
 
 # Load environment variables
@@ -2320,31 +2322,84 @@ def format_mark_unlocks(keys: list[str]) -> str:
         + "\nUse `/myhuntingmarks` to view your board."
     )
 
-MARK_SLOTS = {
-    0: (195, 310),
-    1: (495, 310),
-    2: (795, 310),
-    3: (1095, 310),
-    4: (195, 520),
-    5: (495, 520),
-    6: (795, 520),
-    7: (1095, 520),
-    8: (345, 730),
-    9: (945, 730),
-    10: (645, 730),
+# Every slot is defined by its centre, so locked circles and unlocked artwork
+# cannot drift apart when their source images have different transparent margins.
+MARK_SLOT_CENTERS = {
+    0: (272, 387),
+    1: (572, 387),
+    2: (872, 387),
+    3: (1172, 387),
+    4: (272, 597),
+    5: (572, 597),
+    6: (872, 597),
+    7: (1172, 597),
+    8: (422, 807),
+    9: (1022, 807),
+    10: (722, 807),
 }
 
 from PIL import Image, ImageDraw, ImageFont
 import os
 
 RES_MARKS_DIR = os.path.join("resources", "marks")
+MARKS_SPRITESHEET_PATH = os.path.join(RES_MARKS_DIR, "marks-spritesheet.png")
+MARK_SPRITE_ORDER = tuple(MARK_DEFINITIONS)
 
-def build_hunting_marks_board(unlocked_keys: list[str]) -> str:
+# The source sheet has four equal columns, but its artwork rows are ~333px
+# high—not 362px square. The unused lower strip is why square-grid extraction
+# clipped Long Hunt and mixed adjacent artwork into Focused Month/Relentless.
+MARK_SPRITE_ROW_BOUNDS = (0, 333, 667, 1000)
+
+
+@lru_cache(maxsize=1)
+def _marks_board_template() -> Image.Image:
     board_path = os.path.join(RES_MARKS_DIR, "board.png")
     if not os.path.exists(board_path):
         raise FileNotFoundError("Missing resources/marks/board.png")
+    with Image.open(board_path) as source:
+        return source.convert("RGBA")
 
-    board = Image.open(board_path).convert("RGBA")
+
+@lru_cache(maxsize=1)
+def _marks_spritesheet() -> Image.Image:
+    if not os.path.exists(MARKS_SPRITESHEET_PATH):
+        raise FileNotFoundError("Missing resources/marks/marks-spritesheet.png")
+    with Image.open(MARKS_SPRITESHEET_PATH) as source:
+        return source.convert("RGBA")
+
+
+@lru_cache(maxsize=len(MARK_SPRITE_ORDER))
+def _mark_badge_from_sheet(key: str) -> Image.Image:
+    """Extract and normalize one badge using the sheet's real row spacing."""
+    index = MARK_SPRITE_ORDER.index(key)
+    column, row = index % 4, index // 4
+    sheet = _marks_spritesheet()
+    cell_width = sheet.width // 4
+    left = column * cell_width
+    right = (column + 1) * cell_width
+    top = MARK_SPRITE_ROW_BOUNDS[row]
+    bottom = MARK_SPRITE_ROW_BOUNDS[row + 1]
+    badge = sheet.crop((left, top, right, bottom))
+
+    # Remove transparent cell padding, then give every medallion exactly the
+    # same 190px canvas and visual centre.
+    alpha = badge.getchannel("A")
+    visible_bounds = alpha.point(lambda value: 255 if value > 8 else 0).getbbox()
+    if visible_bounds:
+        badge = badge.crop(visible_bounds)
+    badge.thumbnail((178, 178), Image.Resampling.LANCZOS)
+    normalized = Image.new("RGBA", (190, 190), (0, 0, 0, 0))
+    normalized.alpha_composite(
+        badge,
+        ((190 - badge.width) // 2, (190 - badge.height) // 2),
+    )
+    return normalized
+
+
+@lru_cache(maxsize=128)
+def build_hunting_marks_board(unlocked_keys: tuple[str, ...]) -> bytes:
+    """Render a cached, upload-sized PNG for one combination of marks."""
+    board = _marks_board_template().copy()
     draw = ImageDraw.Draw(board, "RGBA")
     font_path = os.path.join("resources", "MedievalSharp.ttf")
 
@@ -2375,21 +2430,28 @@ def build_hunting_marks_board(unlocked_keys: list[str]) -> str:
         if definition["hidden"] and not is_unlocked:
             continue
 
-        x, y = MARK_SLOTS[definition["slot"]]
+        center_x, center_y = MARK_SLOT_CENTERS[definition["slot"]]
+        x = center_x - badge_size // 2
+        y = center_y - badge_size // 2
         if is_unlocked:
-            badge_path = os.path.join(RES_MARKS_DIR, f"{key}.png")
-            if os.path.exists(badge_path):
-                with Image.open(badge_path) as badge_source:
-                    badge = badge_source.convert("RGBA")
-                    badge.thumbnail((badge_size, badge_size), Image.Resampling.LANCZOS)
-                    badge_x = x + (badge_size - badge.width) // 2
-                    badge_y = y + (badge_size - badge.height) // 2
-                    board.alpha_composite(badge, dest=(badge_x, badge_y))
+            badge = _mark_badge_from_sheet(key).copy()
+            badge.thumbnail((badge_size, badge_size), Image.Resampling.LANCZOS)
+            badge_x = center_x - badge.width // 2
+            badge_y = center_y - badge.height // 2
+            board.alpha_composite(badge, dest=(badge_x, badge_y))
             label = definition["name"]
             label_fill = (230, 202, 148, 255)
         else:
+            # Match the medallions' circular rim rather than their four outer
+            # compass points, so locked and unlocked marks share one baseline.
+            rim_inset = 12
             draw.ellipse(
-                (x + 5, y + 5, x + badge_size - 5, y + badge_size - 5),
+                (
+                    x + rim_inset,
+                    y + rim_inset,
+                    x + badge_size - rim_inset,
+                    y + badge_size - rim_inset,
+                ),
                 fill=(10, 9, 8, 205), outline=(104, 80, 48, 245), width=5,
             )
             question_bbox = draw.textbbox((0, 0), "?", font=locked_font)
@@ -2406,10 +2468,13 @@ def build_hunting_marks_board(unlocked_keys: list[str]) -> str:
             fill=label_fill, stroke_width=1, stroke_fill=(8, 5, 3, 235),
         )
 
-    out_path = os.path.join("temp", f"hunting_marks_{os.urandom(6).hex()}.png")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    board.save(out_path, "PNG")
-    return out_path
+    # 1024px is crisp in Discord while cutting upload size and encoding time
+    # substantially versus the 1448px working canvas.
+    board = board.convert("RGB")
+    board.thumbnail((1024, 768), Image.Resampling.LANCZOS)
+    output = BytesIO()
+    board.save(output, "PNG", compress_level=4)
+    return output.getvalue()
 
 @bot.tree.command(name="myhuntingmarks", description="View and share your Marks of the Hunt board.")
 async def my_hunting_marks(interaction: discord.Interaction):
@@ -2426,7 +2491,8 @@ async def my_hunting_marks(interaction: discord.Interaction):
     unlocked = [r[0] for r in c.fetchall()]
 
     try:
-        img_path = build_hunting_marks_board(unlocked)
+        unlocked_cache_key = tuple(sorted(unlocked))
+        image_bytes = await asyncio.to_thread(build_hunting_marks_board, unlocked_cache_key)
         public_unlocked = sum(
             1 for key in unlocked
             if key in MARK_DEFINITIONS and not MARK_DEFINITIONS[key]["hidden"]
@@ -2436,15 +2502,12 @@ async def my_hunting_marks(interaction: discord.Interaction):
             f"— {public_unlocked}/10 discovered"
             f"{format_mark_unlocks(newly_unlocked)}"
         )
-        await interaction.followup.send(content=message, file=discord.File(img_path))
+        await interaction.followup.send(
+            content=message,
+            file=discord.File(BytesIO(image_bytes), filename="marks-of-the-hunt.png"),
+        )
     except Exception as e:
         await interaction.followup.send(f"Error generating marks board: {e}", ephemeral=True)
-    finally:
-        if 'img_path' in locals():
-            try:
-                os.remove(img_path)
-            except OSError:
-                pass
 
 #Database backup
 TIDE44_ID = 420996360699904000
