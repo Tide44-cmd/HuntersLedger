@@ -161,6 +161,8 @@ async def on_ready():
         await bot.load_extension("calendar_invite")  # Name of the Python file (no .py)
     if "goal_system" not in bot.extensions:
         await bot.load_extension("goal_system")
+    if "server_icons" not in bot.extensions:
+        await bot.load_extension("server_icons")
     await bot.tree.sync()
     print(f"Logged in as {bot.user}!")
 
