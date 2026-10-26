@@ -162,11 +162,24 @@ class IconIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.guild.edit.await_count, 3)
 
     async def test_permission_check(self):
-        interaction = SimpleNamespace(guild=self.guild, permissions=SimpleNamespace(manage_guild=False), response=SimpleNamespace(send_message=AsyncMock()))
+        interaction = SimpleNamespace(
+            guild=self.guild, user=SimpleNamespace(id=999),
+            permissions=SimpleNamespace(manage_guild=True, administrator=False))
+        # Manage Server alone must not authorize any icon command.
         with self.assertRaises(discord.app_commands.MissingPermissions):
             await self.cog.interaction_check(interaction)
-        interaction.permissions.manage_guild = True
+        # Administrator is sufficient.
+        interaction.permissions.administrator = True
         self.assertTrue(await self.cog.interaction_check(interaction))
+        # Tide44 is allowed even without Administrator or Manage Server.
+        interaction.user.id = 420996360699904000
+        interaction.permissions.administrator = False
+        interaction.permissions.manage_guild = False
+        self.assertTrue(await self.cog.interaction_check(interaction))
+        # Commands remain server-only, including for the owner.
+        interaction.guild = None
+        with self.assertRaises(discord.app_commands.MissingPermissions):
+            await self.cog.interaction_check(interaction)
 
     async def test_extension_registers_and_unloads(self):
         with patch.dict('os.environ', {'HUNTERS_LEDGER_DB': ':memory:'}):
@@ -174,7 +187,13 @@ class IconIntegrationTests(unittest.IsolatedAsyncioTestCase):
             group = self.bot.tree.get_command('servericon')
             self.assertEqual({command.name for command in group.commands}, {'set', 'upload', 'schedule', 'unschedule', 'status'})
             self.assertTrue(group.guild_only)
-            self.assertTrue(group.default_permissions.manage_guild)
+            self.assertIsNone(group.default_permissions)
+            # Every registered subcommand must enforce the runtime restriction.
+            denied = SimpleNamespace(guild=self.guild, user=SimpleNamespace(id=999),
+                                     permissions=SimpleNamespace(administrator=False))
+            for command in group.commands:
+                with self.assertRaises(discord.app_commands.MissingPermissions):
+                    await command._check_can_run(denied)
             self.assertTrue(self.bot.get_cog('ServerIcons').check_icons.is_running())
             await self.bot.unload_extension('server_icons')
             self.assertIsNone(self.bot.tree.get_command('servericon'))

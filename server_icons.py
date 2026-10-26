@@ -22,6 +22,7 @@ UK_TIME = ZoneInfo("Europe/London")
 MAX_UPLOAD = 8 * 1024 * 1024
 ICON_DIRECTORY = Path(__file__).resolve().parent / "resources" / "server_icons"
 ICON_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+TIDE44_ID = 420996360699904000
 
 
 def theme_name(value: str) -> str:
@@ -150,7 +151,7 @@ class IconStore:
 class ServerIcons(commands.Cog):
     servericon = app_commands.Group(
         name="servericon", description="Seasonal server icons and manual overrides",
-        guild_only=True, default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
     )
 
     def __init__(self, bot: commands.Bot, db_path: str | None = None):
@@ -169,14 +170,15 @@ class ServerIcons(commands.Cog):
         return self.locks.setdefault(guild_id, asyncio.Lock())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.guild is None or not interaction.permissions.manage_guild:
-            raise app_commands.MissingPermissions(["manage_guild"])
+        if interaction.guild is None or not (
+                interaction.user.id == TIDE44_ID or interaction.permissions.administrator):
+            raise app_commands.MissingPermissions(["administrator"])
         return True
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         original = getattr(error, "original", error)
         if isinstance(original, app_commands.MissingPermissions):
-            message = "You need Manage Server permission to use these commands."
+            message = "Only Tide44 or server administrators can use these commands."
         elif isinstance(original, discord.Forbidden):
             message = "Discord denied the change. Give the bot Manage Server permission, then try again."
         elif isinstance(original, discord.HTTPException):

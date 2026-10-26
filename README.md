@@ -96,7 +96,10 @@ For achievement hunters, by achievement hunters.
 
 The `/servericon` command group changes the **server icon** using UK time
 (`Europe/London`, including BST). It checks once per minute and catches up after
-bot downtime. Both the person configuring it and the bot need **Manage Server**.
+bot downtime. Only Tide44 (`420996360699904000`) or members with **Administrator** permission
+can use the icon commands. Manage Server alone does not grant access.
+The bot itself needs **Manage Server**. Access is checked when each command
+runs; command visibility alone does not grant permission.
 Restart the updated bot to register these commands.
 
 ### First-time setup (repository files)
