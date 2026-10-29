@@ -27,6 +27,19 @@ start_time = time.time()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 STEAMGRIDDB_API_KEY = os.getenv('STEAMGRIDDB_API_KEY')
+TIDE44_ID = 420996360699904000
+
+
+def is_tide44(interaction: discord.Interaction) -> bool:
+    return interaction.user is not None and interaction.user.id == TIDE44_ID
+
+
+async def require_tide44(interaction: discord.Interaction) -> bool:
+    """Restrict sensitive legacy commands to the bot owner."""
+    if is_tide44(interaction):
+        return True
+    await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+    return False
 
 # Database setup
 conn = sqlite3.connect('hunters_ledger.db')
@@ -660,17 +673,18 @@ async def not_hunted(interaction: Interaction):
         await interaction.response.send_message("All games currently have hunters.")
 
 # Command: Rename a game in the database
-@bot.tree.command(name="changehunt", description="Rename a game in the database")
-@commands.has_permissions(administrator=True)
+@bot.tree.command(name="changehunt", description="Owner-only: Rename a game in the database")
 async def change_hunt(interaction: Interaction, old_name: str, new_name: str):
-    c.execute("UPDATE games SET game_name = ? WHERE game_name = ?", (new_name, old_name))
-    if conn.total_changes > 0:
+    if not await require_tide44(interaction):
+        return
+    cursor = c.execute("UPDATE games SET game_name = ? WHERE game_name = ?", (new_name, old_name))
+    if cursor.rowcount:
         conn.commit()
         await interaction.response.send_message(f"Game '{old_name}' has been renamed to '{new_name}'.")
     else:
         await interaction.response.send_message(f"Game '{old_name}' not found.")
 
-# Command: Remove a game from the list (Admin Only)
+# Command: Remove a game from the list (owner only)
 class ConfirmForgetView(discord.ui.View):
     def __init__(self, invoker_id: int, game_id: int, canonical_name: str):
         super().__init__(timeout=60)
@@ -730,9 +744,11 @@ class ConfirmForgetView(discord.ui.View):
 
 
 
-@bot.tree.command(name="forgethunt",description="Remove a game from the tracked list (deletes the game for everyone(Admin Only)).")
+@bot.tree.command(name="forgethunt", description="Owner-only: Remove a tracked game for everyone")
 @app_commands.describe(game_name="Start typing to search...")
 async def forget_hunt(interaction: discord.Interaction, game_name: str):
+    if not await require_tide44(interaction):
+        return
     requester_id = str(interaction.user.id)
 
     # Find the game (case-insensitive)
@@ -796,10 +812,11 @@ async def forget_hunt_autocomplete(interaction: discord.Interaction, current: st
     return [app_commands.Choice(name=row[0], value=row[0]) for row in c.fetchall()]
 
 
-# Command: Remove a user from all games (Admin Only)
-@bot.tree.command(name="forgethunter", description="Remove a user from all games (Admin only)")
-@commands.has_permissions(administrator=True)
+# Command: Remove a user from all games (owner only)
+@bot.tree.command(name="forgethunter", description="Owner-only: Remove a user from all games")
 async def forget_hunter(interaction: Interaction, user: discord.User):
+    if not await require_tide44(interaction):
+        return
     user_id = str(user.id)
     c.execute("DELETE FROM user_games WHERE user_id = ?", (user_id,))
     conn.commit()
@@ -816,23 +833,14 @@ def parse_discord_user_id(value: str) -> str | None:
     return None
 
 
-def is_interaction_admin(interaction: discord.Interaction) -> bool:
-    return bool(
-        interaction.guild
-        and getattr(interaction.user, "guild_permissions", None)
-        and interaction.user.guild_permissions.administrator
-    )
-
-
-# Command: Remove a user from one game (Admin Only)
-@bot.tree.command(name="removehunter", description="Remove a user from one hunt (Admin only)")
+# Command: Remove a user from one game (owner only)
+@bot.tree.command(name="removehunter", description="Owner-only: Remove a user from one hunt")
 @app_commands.describe(
     game_name="Start typing to search...",
     hunter="Select a hunter from the game, mention them, or paste their user ID"
 )
 async def remove_hunter(interaction: discord.Interaction, game_name: str, hunter: str):
-    if not is_interaction_admin(interaction):
-        await interaction.response.send_message("Only admins can remove another hunter from a hunt.", ephemeral=True)
+    if not await require_tide44(interaction):
         return
 
     c.execute("SELECT id, game_name FROM games WHERE LOWER(game_name) = LOWER(?)", (game_name,))
@@ -1241,9 +1249,9 @@ def can_manage_goal_templates(interaction: discord.Interaction) -> bool:
 
 
 class HelpView(discord.ui.View):
-    def __init__(self, is_admin: bool, can_mod_goals: bool):
+    def __init__(self, is_owner: bool, can_mod_goals: bool):
         super().__init__(timeout=300)
-        self.is_admin = is_admin
+        self.is_owner = is_owner
         self.can_mod_goals = can_mod_goals
 
         self.add_item(self.SectionButton("Quick Start", "quick"))
@@ -1257,8 +1265,8 @@ class HelpView(discord.ui.View):
         self.add_item(self.SectionButton("Cards", "cards", row=1))
         self.add_item(self.SectionButton("Info", "info", row=1))
         self.add_item(self.SectionButton("Fun", "fun", row=1))
-        if is_admin:
-            self.add_item(self.SectionButton("Admin", "admin", row=1))
+        if is_owner:
+            self.add_item(self.SectionButton("Owner", "owner", row=1))
 
     class SectionButton(discord.ui.Button):
         def __init__(self, label: str, key: str, row: int = 0):
@@ -1268,7 +1276,7 @@ class HelpView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction):
             embed = build_ledger_help_embed(
                 self.key,
-                is_admin=self.view.is_admin,
+                is_owner=self.view.is_owner,
                 can_mod_goals=self.view.can_mod_goals,
             )
             if interaction.response.is_done():
@@ -1277,7 +1285,7 @@ class HelpView(discord.ui.View):
                 await interaction.response.edit_message(embed=embed, view=self.view)
 
 
-def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = False) -> discord.Embed:
+def build_ledger_help_embed(section: str, is_owner: bool, can_mod_goals: bool = False) -> discord.Embed:
     e = discord.Embed(color=0x2b2d31)
     base_note = "Use the buttons below to switch sections."
 
@@ -1352,7 +1360,7 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
             "• Rename: `/renamegoal oldtitle newtitle`\n"
             "• Delete: `/deletegoal goaltitle`\n"
             "• Add goal games to backlog: `/addmissinghunts goaltitle`\n\n"
-            "_Goal types: Series, A–Z, Genre, Event, and Personal. Progress is read from your solo backlog; completed hunts are crossed out automatically._"
+            "_Goal types: Series, A–Z, Genre, Developer, Event, and Personal. Progress is read from your solo backlog; completed hunts are crossed out automatically._"
         )
         return e
 
@@ -1371,6 +1379,7 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
             "• Create: `/modgoal goaltype goaltitle`\n"
             "• Add games and sync copies: `/modaddtogoal goaltype goaltitle`\n"
             "• Archive a game: `/modremovefromgoal goaltype goaltitle game`\n"
+            "• Rename a game: `/modrenamegameingoal goal old_name new_name`\n"
             "• Rename: `/modrenamegoal oldtitle newtitle`\n"
             "• View templates and copy counts: `/modgoals`\n\n"
             "_Access uses the configured moderator, admin, and leader role IDs._"
@@ -1390,8 +1399,8 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
         e.description = "• Coming soon 😄"
         return e
 
-    if section == "admin" and is_admin:
-        e.title = "Admin"
+    if section == "owner" and is_owner:
+        e.title = "Owner Tools"
         e.description = (
             "• Rename tracked hunt: `/changehunt \"old\" \"new\"`\n"
             "• Remove tracked hunt: `/forgethunt \"name\"`\n"
@@ -1400,22 +1409,23 @@ def build_ledger_help_embed(section: str, is_admin: bool, can_mod_goals: bool = 
         )
         return e
 
-    return build_ledger_help_embed("quick", is_admin=is_admin, can_mod_goals=can_mod_goals)
+    return build_ledger_help_embed("quick", is_owner=is_owner, can_mod_goals=can_mod_goals)
 
 
 @bot.tree.command(name="help", description="Shows help sections with buttons.")
 async def help_command(interaction: discord.Interaction):
-    is_admin = bool(interaction.guild and interaction.user.guild_permissions.administrator)
+    is_owner = is_tide44(interaction)
     can_mod_goals = can_manage_goal_templates(interaction)
-    view = HelpView(is_admin=is_admin, can_mod_goals=can_mod_goals)
-    embed = build_ledger_help_embed("quick", is_admin=is_admin, can_mod_goals=can_mod_goals)
+    view = HelpView(is_owner=is_owner, can_mod_goals=can_mod_goals)
+    embed = build_ledger_help_embed("quick", is_owner=is_owner, can_mod_goals=can_mod_goals)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
   
-# Command: Check who added a specific game (Admin only).
-@bot.tree.command(name="whoadded", description="Check who added a specific game (Admin only).")
-@commands.has_permissions(administrator=True)
+# Command: Check who added a specific game (owner only).
+@bot.tree.command(name="whoadded", description="Owner-only: Check who added a specific game")
 async def who_added(interaction: discord.Interaction, game_name: str):
+    if not await require_tide44(interaction):
+        return
     c.execute("SELECT user FROM logs WHERE command = 'trackhunt' AND game_name = ?", (game_name,))
     users = c.fetchall()
     if users:
@@ -2511,15 +2521,7 @@ async def my_hunting_marks(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"Error generating marks board: {e}", ephemeral=True)
 
-#Database backup
-TIDE44_ID = 420996360699904000
-
-def is_tide44(interaction: discord.Interaction) -> bool:
-    return interaction.user and interaction.user.id == TIDE44_ID
-
-import sqlite3
-import os
-from datetime import datetime
+# Database backup
 DB_PATH = "hunters_ledger.db"
 
 def backup_database(db_path: str, backup_dir: str = "backups") -> str:

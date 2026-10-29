@@ -19,11 +19,12 @@ from discord.ext import commands
 
 
 DB_PATH = os.getenv("HUNTERS_LEDGER_DB", "hunters_ledger.db")
-GOAL_TYPES = ("series", "az", "genre", "event", "personal")
+GOAL_TYPES = ("series", "az", "genre", "developer", "event", "personal")
 GOAL_LABELS = {
     "series": "Series",
     "az": "A–Z",
     "genre": "Genre",
+    "developer": "Developer",
     "event": "Event",
     "personal": "Personal",
 }
@@ -305,7 +306,7 @@ class GoalSystem(commands.Cog):
             """
             CREATE TABLE IF NOT EXISTS goal_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'developer', 'event', 'personal')),
                 title TEXT NOT NULL COLLATE NOCASE,
                 description TEXT,
                 created_by_user_id TEXT NOT NULL,
@@ -338,7 +339,7 @@ class GoalSystem(commands.Cog):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
                 user_name TEXT NOT NULL,
-                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'developer', 'event', 'personal')),
                 title TEXT NOT NULL COLLATE NOCASE,
                 description TEXT,
                 source_template_id INTEGER REFERENCES goal_templates(id) ON DELETE SET NULL,
@@ -387,7 +388,7 @@ class GoalSystem(commands.Cog):
         self.db.commit()
 
     def _migrate_goal_type_checks(self) -> None:
-        """Rebuild old/damaged goal tables after adding Event and Personal types.
+        """Rebuild old/damaged goal tables after expanding the available goal types.
 
         SQLite rewrites child foreign-key definitions when a parent table is
         renamed. The first version of this migration rebuilt the parent tables
@@ -399,7 +400,7 @@ class GoalSystem(commands.Cog):
             "goal_templates": (
                 """CREATE TABLE goal_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'developer', 'event', 'personal')),
                     title TEXT NOT NULL COLLATE NOCASE,
                     description TEXT,
                     created_by_user_id TEXT NOT NULL,
@@ -438,7 +439,7 @@ class GoalSystem(commands.Cog):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     user_name TEXT NOT NULL,
-                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'event', 'personal')),
+                    goal_type TEXT NOT NULL CHECK(goal_type IN ('series', 'az', 'genre', 'developer', 'event', 'personal')),
                     title TEXT NOT NULL COLLATE NOCASE,
                     description TEXT,
                     source_template_id INTEGER REFERENCES goal_templates(id) ON DELETE SET NULL,
@@ -506,13 +507,12 @@ class GoalSystem(commands.Cog):
         self.db.commit()
         self.db.execute("PRAGMA foreign_keys = OFF")
         try:
-            if "event" not in table_sql("goal_templates") or "personal" not in table_sql("goal_templates"):
+            if any(goal_type not in table_sql("goal_templates") for goal_type in GOAL_TYPES):
                 rebuild("goal_templates")
 
             user_goals_sql = table_sql("user_goals")
             if (
-                "event" not in user_goals_sql
-                or "personal" not in user_goals_sql
+                any(goal_type not in user_goals_sql for goal_type in GOAL_TYPES)
                 or "_old_goal_type_check" in user_goals_sql
                 or "_rebuild_fix" in user_goals_sql
             ):
@@ -574,6 +574,19 @@ class GoalSystem(commands.Cog):
             f"SELECT * FROM goal_templates WHERE goal_type = ? AND title = ? COLLATE NOCASE{suffix}",
             (goal_type, title.strip()),
         ).fetchone()
+
+    def _templates_for_reference(self, value: str) -> list[sqlite3.Row]:
+        """Resolve an autocomplete template ID or a manually entered unique title."""
+        reference = (value or "").strip()
+        if reference.startswith("template:") and reference.removeprefix("template:").isdigit():
+            return self.db.execute(
+                "SELECT * FROM goal_templates WHERE id = ? AND is_active = 1",
+                (int(reference.removeprefix("template:")),),
+            ).fetchall()
+        return self.db.execute(
+            "SELECT * FROM goal_templates WHERE title = ? COLLATE NOCASE AND is_active = 1",
+            (reference,),
+        ).fetchall()
 
     def _insert_user_items(
         self, goal_id: int, items: list[tuple[str | None, str]], personal: bool,
@@ -1288,6 +1301,143 @@ class GoalSystem(commands.Cog):
             """SELECT game_name FROM goal_template_items WHERE template_id = ? AND is_active = 1
                AND game_name LIKE ? COLLATE NOCASE ORDER BY sort_order, game_name LIMIT 25""",
             (template["id"], f"%{current}%"),
+        ).fetchall()
+        return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
+
+    @app_commands.command(
+        name="modrenamegameingoal",
+        description="Rename a game in an official goal and all linked copies.",
+    )
+    @app_commands.describe(
+        goal="Official goal containing the game",
+        old_name="Existing game name",
+        new_name="Replacement game name",
+    )
+    async def modrenamegameingoal(
+        self,
+        interaction: discord.Interaction,
+        goal: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        if not await self._require_mod(interaction):
+            return
+
+        templates = self._templates_for_reference(goal)
+        if len(templates) != 1:
+            await interaction.response.send_message(
+                "The goal must identify exactly one active official goal.", ephemeral=True
+            )
+            return
+
+        template = templates[0]
+        item = self.db.execute(
+            """SELECT * FROM goal_template_items
+               WHERE template_id = ? AND game_name = ? COLLATE NOCASE AND is_active = 1""",
+            (template["id"], old_name.strip()),
+        ).fetchone()
+        if not item:
+            await interaction.response.send_message(
+                "I could not find that active game in the official goal.", ephemeral=True
+            )
+            return
+
+        cleaned_name = re.sub(r"\s+", " ", (new_name or "").strip())[:250]
+        normalized_name = normalize_game_name(cleaned_name)
+        if not normalized_name:
+            await interaction.response.send_message("Give the game a valid new name.", ephemeral=True)
+            return
+
+        duplicate = self.db.execute(
+            """SELECT 1 FROM goal_template_items
+               WHERE template_id = ? AND normalized_game_name = ? AND id != ?""",
+            (template["id"], normalized_name, item["id"]),
+        ).fetchone()
+        if duplicate:
+            await interaction.response.send_message(
+                "That official goal already contains a game with the new name.", ephemeral=True
+            )
+            return
+
+        linked_copy_conflict = self.db.execute(
+            """SELECT 1
+               FROM user_goal_items source_item
+               WHERE source_item.source_template_item_id = ?
+                 AND EXISTS (
+                     SELECT 1 FROM user_goal_items other
+                     WHERE other.user_goal_id = source_item.user_goal_id
+                       AND other.normalized_game_name = ?
+                       AND other.id != source_item.id
+                 )
+               LIMIT 1""",
+            (item["id"], normalized_name),
+        ).fetchone()
+        if linked_copy_conflict:
+            await interaction.response.send_message(
+                "A linked goal copy already contains the new game name, so the rename was not applied.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            self.db.execute(
+                """UPDATE goal_template_items
+                   SET game_name = ?, normalized_game_name = ? WHERE id = ?""",
+                (cleaned_name, normalized_name, item["id"]),
+            )
+            cursor = self.db.execute(
+                """UPDATE user_goal_items
+                   SET game_name = ?, normalized_game_name = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE source_template_item_id = ?""",
+                (cleaned_name, normalized_name, item["id"]),
+            )
+            self.db.execute(
+                "UPDATE goal_templates SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (template["id"],),
+            )
+            self.db.commit()
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+            await interaction.response.send_message(
+                "That rename would create a duplicate game in the template or a linked copy.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Renamed **{item['game_name']}** to **{cleaned_name}** in **{template['title']}** "
+            f"and updated {cursor.rowcount} linked goal copy/copies. Solo backlogs were unchanged.",
+            ephemeral=True,
+        )
+
+    @modrenamegameingoal.autocomplete("goal")
+    async def modrenamegame_goal_autocomplete(self, interaction: discord.Interaction, current: str):
+        rows = self.db.execute(
+            """SELECT id, title, goal_type FROM goal_templates
+               WHERE is_active = 1 AND title LIKE ? COLLATE NOCASE
+               ORDER BY title, goal_type LIMIT 25""",
+            (f"%{current}%",),
+        ).fetchall()
+        return [
+            app_commands.Choice(
+                name=f"{row['title']} ({GOAL_LABELS.get(row['goal_type'], row['goal_type'].title())})"[:100],
+                value=f"template:{row['id']}",
+            )
+            for row in rows
+        ]
+
+    @modrenamegameingoal.autocomplete("old_name")
+    async def modrenamegame_old_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        goal = str(getattr(interaction.namespace, "goal", ""))
+        templates = self._templates_for_reference(goal)
+        if len(templates) != 1:
+            return []
+        rows = self.db.execute(
+            """SELECT game_name FROM goal_template_items
+               WHERE template_id = ? AND is_active = 1
+                 AND game_name LIKE ? COLLATE NOCASE
+               ORDER BY sort_order, game_name LIMIT 25""",
+            (templates[0]["id"], f"%{current}%"),
         ).fetchall()
         return [app_commands.Choice(name=row[0][:100], value=row[0]) for row in rows]
 

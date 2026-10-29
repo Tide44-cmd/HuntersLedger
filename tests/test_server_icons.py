@@ -1,6 +1,5 @@
 """Run with: python -m unittest discover -s tests -v (no live Discord needed)."""
 import asyncio
-from datetime import date
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -12,40 +11,10 @@ import discord
 from discord.ext import commands
 from PIL import Image
 
-from server_icons import IconStore, ServerIcons, normalize_icon, scheduled_theme, validate_window, window_active
+from server_icons import IconStore, ServerIcons, normalize_icon
 
 
-def window(theme, start, end, priority=0):
-    return dict(theme=theme, start=start, end=end, priority=priority)
-
-
-class CalendarTests(unittest.TestCase):
-    def test_requested_boundaries(self):
-        windows = [window('halloween', '10-14', '11-01'), window('bonfire', '11-01', '11-06')]
-        for day, expected in [('10-13', 'default'), ('10-14', 'halloween'), ('10-31', 'halloween'), ('11-01', 'bonfire'), ('11-05', 'bonfire'), ('11-06', 'default')]:
-            with self.subTest(day=day):
-                self.assertEqual(scheduled_theme(windows, date.fromisoformat('2026-' + day)), expected)
-                self.assertEqual(scheduled_theme(windows, date.fromisoformat('2027-' + day)), expected)
-
-    def test_year_crossing_and_one_off_easter(self):
-        for day, expected in [('2026-12-30', False), ('2026-12-31', True), ('2027-01-01', True), ('2027-01-03', False)]:
-            self.assertEqual(window_active(date.fromisoformat(day), '12-31', '01-03'), expected)
-        self.assertTrue(window_active(date(2027, 3, 28), '2027-03-26', '2027-03-30'))
-        self.assertFalse(window_active(date(2028, 3, 28), '2027-03-26', '2027-03-30'))
-
-    def test_overlaps(self):
-        windows = [window('autumn', '09-01', '12-01'), window('halloween', '10-14', '11-01', 10)]
-        self.assertEqual(scheduled_theme(windows, date(2026, 10, 20)), 'halloween')
-        windows.append(window('wedding', '2026-10-20', '2026-10-21'))
-        self.assertEqual(scheduled_theme(windows, date(2026, 10, 20)), 'wedding')
-
-    def test_reject_invalid_dates(self):
-        for start, end in [('10-14', '2026-11-01'), ('02-30', '03-01'), ('11-06', '11-06'), ('2026-11-06', '2026-11-01'), ('1-1', '01-02')]:
-            with self.subTest(start=start), self.assertRaises(ValueError):
-                validate_window(start, end)
-        validate_window('12-31', '01-03')
-        validate_window('02-29', '03-01')
-
+class ImageTests(unittest.TestCase):
     def test_image_validation_and_resize(self):
         data = BytesIO()
         Image.new('RGB', (1000, 600), 'teal').save(data, format='JPEG')
@@ -137,19 +106,22 @@ class IconIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self.cog.apply_icon(self.guild, 'wedding')
         self.assertEqual(self.cog.store.ensure(123)['mode'], 'halloween')
 
-    async def test_auto_uses_today_and_falls_back_for_missing_asset(self):
-        with patch('server_icons.datetime') as clock:
-            clock.now.return_value.date.return_value = date(2026, 11, 1)
-            await self.cog.apply_icon(self.guild, 'auto')
-            self.assertEqual(self.guild.edit.call_args.kwargs['icon'], b'bonfire')
-            self.cog.store.db.execute("DELETE FROM server_icon_assets WHERE theme = 'bonfire'")
-            self.cog.store.db.commit()
-            result = await self.cog.apply_icon(self.guild)
-            self.assertIn('Missing bonfire', result)
-            self.assertEqual(self.guild.edit.call_args.kwargs['icon'], b'default')
-            clock.now.return_value.date.return_value = date(2026, 11, 6)
-            await self.cog.apply_icon(self.guild)
-            self.assertIsNone(self.cog.store.ensure(123)['last_error'])
+    async def test_manual_selection_requires_an_available_asset(self):
+        await self.cog.apply_icon(self.guild, 'bonfire')
+        self.assertEqual(self.guild.edit.call_args.kwargs['icon'], b'bonfire')
+        self.cog.store.db.execute("DELETE FROM server_icon_assets WHERE theme = 'bonfire'")
+        self.cog.store.db.commit()
+        with self.assertRaises(ValueError):
+            await self.cog.apply_icon(self.guild, 'bonfire')
+        self.assertEqual(self.cog.store.ensure(123)['mode'], 'bonfire')
+
+    async def test_old_auto_mode_is_migrated_to_paused(self):
+        self.cog.store.db.execute("UPDATE server_icon_settings SET mode = 'auto' WHERE guild_id = 123")
+        self.cog.store.db.commit()
+        self.cog.store.db.close()
+        self.cog.store = IconStore(self.path)
+        self.assertEqual(self.cog.store.ensure(123)['mode'], 'paused')
+        self.assertIn('No icon is selected', await self.cog.apply_icon(self.guild))
 
     async def test_image_replacement_and_external_change_reapply(self):
         await self.cog.apply_icon(self.guild, 'default')
@@ -185,7 +157,7 @@ class IconIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict('os.environ', {'HUNTERS_LEDGER_DB': ':memory:'}):
             await self.bot.load_extension('server_icons')
             group = self.bot.tree.get_command('servericon')
-            self.assertEqual({command.name for command in group.commands}, {'set', 'upload', 'schedule', 'unschedule', 'status'})
+            self.assertEqual({command.name for command in group.commands}, {'set', 'upload', 'status'})
             self.assertTrue(group.guild_only)
             self.assertIsNone(group.default_permissions)
             # Every registered subcommand must enforce the runtime restriction.
@@ -194,7 +166,6 @@ class IconIntegrationTests(unittest.IsolatedAsyncioTestCase):
             for command in group.commands:
                 with self.assertRaises(discord.app_commands.MissingPermissions):
                     await command._check_can_run(denied)
-            self.assertTrue(self.bot.get_cog('ServerIcons').check_icons.is_running())
             await self.bot.unload_extension('server_icons')
             self.assertIsNone(self.bot.tree.get_command('servericon'))
             await asyncio.sleep(0)
