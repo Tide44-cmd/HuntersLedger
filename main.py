@@ -1259,7 +1259,7 @@ class HelpView(discord.ui.View):
         self.add_item(self.SectionButton("Solo Hunts", "solo"))
         self.add_item(self.SectionButton("Goals", "goals"))
         if can_mod_goals:
-            self.add_item(self.SectionButton("Goal Mods", "goalmods"))
+            self.add_item(self.SectionButton("Admin / Mods", "goalmods"))
 
         self.add_item(self.SectionButton("Challenges", "challenges", row=1))
         self.add_item(self.SectionButton("Cards", "cards", row=1))
@@ -1374,7 +1374,7 @@ def build_ledger_help_embed(section: str, is_owner: bool, can_mod_goals: bool = 
         return e
 
     if section == "goalmods" and can_mod_goals:
-        e.title = "Official Goal Templates"
+        e.title = "Admin / Goal Moderation"
         e.description = (
             "• Create: `/modgoal goaltype goaltitle`\n"
             "• Add games and sync copies: `/modaddtogoal goaltype goaltitle`\n"
@@ -1402,10 +1402,18 @@ def build_ledger_help_embed(section: str, is_owner: bool, can_mod_goals: bool = 
     if section == "owner" and is_owner:
         e.title = "Owner Tools"
         e.description = (
+            "**Tracked hunts and hunters**\n"
             "• Rename tracked hunt: `/changehunt \"old\" \"new\"`\n"
             "• Remove tracked hunt: `/forgethunt \"name\"`\n"
             "• Remove hunter from one hunt: `/removehunter \"name\" hunter`\n"
             "• Remove hunter from all: `/forgethunter @user`\n"
+            "• View who added a hunt: `/whoadded \"name\"`\n\n"
+            "**Server icon**\n"
+            "• Change icon: `/servericon set theme`\n"
+            "• Upload icon: `/servericon upload theme image`\n"
+            "• View icon choices: `/servericon status`\n\n"
+            "**Maintenance**\n"
+            "• Back up the database: `/backupdb`"
         )
         return e
 

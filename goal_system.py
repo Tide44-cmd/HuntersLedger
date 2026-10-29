@@ -588,6 +588,51 @@ class GoalSystem(commands.Cog):
             (reference,),
         ).fetchall()
 
+    def _linked_backlog_rename_plan(
+        self,
+        template_id: int,
+        template_item_id: int,
+        old_normalized_name: str,
+        new_normalized_name: str,
+    ) -> tuple[list[int], set[str]]:
+        """Return backlog row IDs to rename and users whose ledgers would conflict."""
+        rows = self.db.execute(
+            """SELECT DISTINCT sb.id, sb.user_id, sb.game_name
+               FROM solo_backlogs sb
+               JOIN user_goals ug ON ug.user_id = sb.user_id
+               JOIN user_goal_items ugi ON ugi.user_goal_id = ug.id
+               WHERE ug.source_template_id = ?
+                 AND ug.is_active = 1
+                 AND ugi.source_template_item_id = ?
+                 AND ugi.is_hidden = 0""",
+            (template_id, template_item_id),
+        ).fetchall()
+
+        by_user: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for row in rows:
+            by_user[str(row["user_id"])].append(row)
+
+        backlog_ids: list[int] = []
+        conflicts: set[str] = set()
+        for user_id, user_rows in by_user.items():
+            old_rows = [
+                row for row in user_rows
+                if normalize_game_name(row["game_name"]) == old_normalized_name
+            ]
+            if not old_rows:
+                continue
+            old_ids = {row["id"] for row in old_rows}
+            target_exists = any(
+                row["id"] not in old_ids
+                and normalize_game_name(row["game_name"]) == new_normalized_name
+                for row in user_rows
+            )
+            if target_exists:
+                conflicts.add(user_id)
+                continue
+            backlog_ids.extend(row["id"] for row in old_rows)
+        return backlog_ids, conflicts
+
     def _insert_user_items(
         self, goal_id: int, items: list[tuple[str | None, str]], personal: bool,
     ) -> tuple[int, list[str]]:
@@ -1379,17 +1424,35 @@ class GoalSystem(commands.Cog):
             )
             return
 
+        backlog_ids, backlog_conflicts = self._linked_backlog_rename_plan(
+            template["id"],
+            item["id"],
+            item["normalized_game_name"],
+            normalized_name,
+        )
+        if backlog_conflicts:
+            await interaction.response.send_message(
+                f"The rename was not applied because {len(backlog_conflicts)} linked personal "
+                "ledger(s) already contain the new game name.",
+                ephemeral=True,
+            )
+            return
+
         try:
             self.db.execute(
                 """UPDATE goal_template_items
                    SET game_name = ?, normalized_game_name = ? WHERE id = ?""",
                 (cleaned_name, normalized_name, item["id"]),
             )
-            cursor = self.db.execute(
+            copy_cursor = self.db.execute(
                 """UPDATE user_goal_items
                    SET game_name = ?, normalized_game_name = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE source_template_item_id = ?""",
                 (cleaned_name, normalized_name, item["id"]),
+            )
+            self.db.executemany(
+                "UPDATE solo_backlogs SET game_name = ? WHERE id = ?",
+                [(cleaned_name, backlog_id) for backlog_id in backlog_ids],
             )
             self.db.execute(
                 "UPDATE goal_templates SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1406,7 +1469,8 @@ class GoalSystem(commands.Cog):
 
         await interaction.response.send_message(
             f"Renamed **{item['game_name']}** to **{cleaned_name}** in **{template['title']}** "
-            f"and updated {cursor.rowcount} linked goal copy/copies. Solo backlogs were unchanged.",
+            f"and updated {copy_cursor.rowcount} linked goal copy/copies plus "
+            f"{len(backlog_ids)} personal ledger entr{'y' if len(backlog_ids) == 1 else 'ies'}.",
             ephemeral=True,
         )
 

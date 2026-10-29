@@ -34,6 +34,19 @@ class GoalSystemTests(unittest.TestCase):
         self.path = Path(tempfile.gettempdir()) / f"hunters_ledger_goal_test_{uuid4().hex}.db"
         with patch.object(goal_system, "DB_PATH", str(self.path)):
             self.cog = GoalSystem(SimpleNamespace())
+        self.cog.db.execute(
+            """CREATE TABLE IF NOT EXISTS solo_backlogs (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   user_id TEXT NOT NULL,
+                   user_name TEXT NOT NULL,
+                   game_name TEXT NOT NULL,
+                   status TEXT DEFAULT 'not started',
+                   completion_date DATE,
+                   rating INTEGER,
+                   comments TEXT
+               )"""
+        )
+        self.cog.db.commit()
 
     def tearDown(self):
         self.cog.cog_unload()
@@ -134,6 +147,15 @@ class GoalSystemTests(unittest.TestCase):
                VALUES (?, ?, 'Alan Wake', ?)""",
             (user_goal.lastrowid, template_item.lastrowid, normalize_game_name("Alan Wake")),
         )
+        self.cog.db.execute(
+            """INSERT INTO solo_backlogs
+               (user_id, user_name, game_name, status, completion_date, rating, comments)
+               VALUES ('2', 'Hunter', 'Alan Wake', 'completed', '2026-10-01', 5, 'Excellent')"""
+        )
+        self.cog.db.execute(
+            """INSERT INTO solo_backlogs (user_id, user_name, game_name, status)
+               VALUES ('3', 'Unlinked Hunter', 'Alan Wake', 'in progress')"""
+        )
         self.cog.db.commit()
 
         interaction = SimpleNamespace(
@@ -153,9 +175,61 @@ class GoalSystemTests(unittest.TestCase):
             "SELECT game_name FROM user_goal_items WHERE source_template_item_id = ?",
             (template_item.lastrowid,),
         ).fetchone()[0]
+        linked_backlog = self.cog.db.execute(
+            """SELECT game_name, status, completion_date, rating, comments
+               FROM solo_backlogs WHERE user_id = '2'"""
+        ).fetchone()
+        unlinked_name = self.cog.db.execute(
+            "SELECT game_name FROM solo_backlogs WHERE user_id = '3'"
+        ).fetchone()[0]
         self.assertEqual(template_name, "Alan Wake Remastered")
         self.assertEqual(copy_name, "Alan Wake Remastered")
+        self.assertEqual(
+            tuple(linked_backlog),
+            ("Alan Wake Remastered", "completed", "2026-10-01", 5, "Excellent"),
+        )
+        self.assertEqual(unlinked_name, "Alan Wake")
         self.assertEqual(len(interaction.response.messages), 1)
+
+    def test_backlog_rename_plan_rejects_destination_conflict(self):
+        template = self.cog.db.execute(
+            """INSERT INTO goal_templates
+               (goal_type, title, created_by_user_id, created_by_user_name)
+               VALUES ('series', 'Mafia', '1', 'Tester')"""
+        )
+        template_item = self.cog.db.execute(
+            """INSERT INTO goal_template_items
+               (template_id, game_name, normalized_game_name)
+               VALUES (?, 'Mafia III', ?)""",
+            (template.lastrowid, normalize_game_name("Mafia III")),
+        )
+        user_goal = self.cog.db.execute(
+            """INSERT INTO user_goals
+               (user_id, user_name, goal_type, title, source_template_id, is_template_copy)
+               VALUES ('2', 'Hunter', 'series', 'Mafia', ?, 1)""",
+            (template.lastrowid,),
+        )
+        self.cog.db.execute(
+            """INSERT INTO user_goal_items
+               (user_goal_id, source_template_item_id, game_name, normalized_game_name)
+               VALUES (?, ?, 'Mafia III', ?)""",
+            (user_goal.lastrowid, template_item.lastrowid, normalize_game_name("Mafia III")),
+        )
+        self.cog.db.executemany(
+            """INSERT INTO solo_backlogs (user_id, user_name, game_name)
+               VALUES ('2', 'Hunter', ?)""",
+            [("Mafia III",), ("Mafia III (Xbox One)",)],
+        )
+        self.cog.db.commit()
+
+        backlog_ids, conflicts = self.cog._linked_backlog_rename_plan(
+            template.lastrowid,
+            template_item.lastrowid,
+            normalize_game_name("Mafia III"),
+            normalize_game_name("Mafia III (Xbox One)"),
+        )
+        self.assertEqual(backlog_ids, [])
+        self.assertEqual(conflicts, {"2"})
 
 
 if __name__ == "__main__":
